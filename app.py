@@ -97,11 +97,11 @@ with st.spinner("Running backtest…"):
 strat, bh = s["Month-end strategy"], s["Buy & hold"]
 c = st.columns(6)
 c[0].metric("Sharpe (strategy)", f"{strat['Sharpe']:.2f}", f"{strat['Sharpe'] - bh['Sharpe']:+.2f} vs buy & hold")
-c[1].metric("Excess return / yr", f"{strat['Excess return (ann.)']:.2%}", f"buy & hold {bh['Excess return (ann.)']:.2%}", delta_color="off")
-c[2].metric("Max drawdown", f"{strat['Max drawdown']:.1%}", f"buy & hold {bh['Max drawdown']:.1%}", delta_color="off")
-c[3].metric("Avg trade (net)", f"{strat.get('Avg trade (net excess)', np.nan):.2%}", f"{int(strat.get('Trades', 0))} trades", delta_color="off")
-c[4].metric("Hit rate", f"{strat.get('Hit rate', np.nan):.0%}", f"in market {strat['Time in market']:.0%} of days", delta_color="off")
-c[5].metric("Permutation p-value", f"{perm['p_value']:.4f}", "vs random windows", delta_color="off")
+c[1].metric("Excess return / yr", f"{strat['Excess return (ann.)']:.2%}", f"buy & hold {bh['Excess return (ann.)']:.2%}", delta_color="off", delta_arrow="off")
+c[2].metric("Max drawdown", f"{strat['Max drawdown']:.1%}", f"buy & hold {bh['Max drawdown']:.1%}", delta_color="off", delta_arrow="off")
+c[3].metric("Avg trade (net)", f"{strat.get('Avg trade (net excess)', np.nan):.2%}", f"{int(strat.get('Trades', 0))} trades", delta_color="off", delta_arrow="off")
+c[4].metric("Hit rate", f"{strat.get('Hit rate', np.nan):.0%}", f"in market {strat['Time in market']:.0%} of days", delta_color="off", delta_arrow="off")
+c[5].metric("Permutation p-value", f"{perm['p_value']:.4f}", "vs random windows", delta_color="off", delta_arrow="off")
 
 tab_overview, tab_robust, tab_trades, tab_about = st.tabs(["Performance", "Robustness", "Trades", "How it works"])
 
