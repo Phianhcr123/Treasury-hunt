@@ -34,6 +34,14 @@ def test_incomplete_final_month_is_never_treated_as_month_end():
     assert pos.loc["2024-01-29":"2024-01-31"].tolist() == [1, 1, 1]
 
 
+def test_window_in_progress_at_data_start_is_skipped():
+    df = make_df("2024-01-30", "2024-02-29")
+    pos = positions(df.index, Window(3, 0))
+    assert pos.loc["2024-01"].sum() == 0
+    res = run_backtest(df, Window(3, 0))
+    assert res.trades["entry_close"].notna().all()
+
+
 def test_positions_hold_last_n_days():
     df = make_df("2024-01-01", "2024-02-29")
     pos = positions(df.index, Window(3, 0))

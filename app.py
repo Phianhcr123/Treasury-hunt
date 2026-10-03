@@ -44,7 +44,7 @@ with st.sidebar:
     entry = st.slider("Enter N trading days before month-end", 1, 10, PRE_REGISTERED.entry)
     exit_ = st.slider("Exit (days relative to month-end close)", -2, 3, PRE_REGISTERED.exit, help="0 = last trading day of the month, +1 = first trading day of the next month")
     cost_bps = st.slider("Trading cost per side (bps)", 0.0, 10.0, 2.0, 0.5, help="Spread + commission + slippage. TLT's spread is about 1 bp.")
-    if st.button("Re-download latest data", use_container_width=True):
+    if st.button("Re-download latest data", width="stretch"):
         st.session_state.refresh += 1
         st.cache_data.clear()
     st.caption("Prices: Yahoo Finance, dividend-adjusted. Cash earns the 13-week T-bill rate (^IRX).")
@@ -112,7 +112,7 @@ with tab_overview:
     fig.add_trace(go.Scatter(x=d.index, y=(1 + d["buy_hold_excess"]).cumprod(), name=f"Buy & hold {ticker}", line=dict(width=1.5, color="#9ca3af")))
     fig.add_trace(go.Scatter(x=d.index, y=(1 + d["rest_of_month_excess"]).cumprod(), name="Rest of month only", line=dict(width=1.5, color="#f97316", dash="dot")))
     fig.update_layout(title="Growth of $1 in excess of T-bills (log scale)", yaxis_type="log", height=430, legend=dict(orientation="h", y=-0.15), margin=dict(t=50, b=10))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     left, right = st.columns(2)
     with left:
@@ -127,24 +127,24 @@ with tab_overview:
             )
         )
         fig.update_layout(title="Average daily excess return by day of month (blue = held)", xaxis_title="Trading day vs month-end (0 = last day)", yaxis_title="bps per day", height=380, margin=dict(t=50))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     with right:
         fig = go.Figure()
         fig.add_trace(go.Bar(x=yearly.index, y=yearly["Strategy excess"] * 100, name="Strategy", marker_color="#2563eb"))
         fig.add_trace(go.Bar(x=yearly.index, y=yearly["Buy & hold excess"] * 100, name="Buy & hold", marker_color="#cbd5e1"))
         fig.update_layout(title="Calendar-year excess return (%)", barmode="group", height=380, legend=dict(orientation="h", y=-0.2), margin=dict(t=50))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     table = pd.DataFrame(s).T
     pct_cols = ["CAGR", "Excess return (ann.)", "Volatility (ann.)", "Max drawdown", "Time in market", "Avg trade (net excess)", "Hit rate"]
     fmt = {k: "{:.2%}" for k in pct_cols} | {"Sharpe": "{:.2f}", "t-stat (per trade)": "{:.2f}", "Trades": "{:.0f}"}
-    st.dataframe(table.style.format(fmt, na_rep="–"), use_container_width=True)
+    st.dataframe(table.style.format(fmt, na_rep="–"), width="stretch")
 
 with tab_robust:
     st.subheader("Does it still work? Sub-period results")
     st.dataframe(
         subs.style.format({"Strategy Sharpe": "{:.2f}", "Buy & hold Sharpe": "{:.2f}", "Strategy excess (ann.)": "{:.2%}", "Avg trade (net)": "{:.2%}", "Hit rate": "{:.0%}"}),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     st.caption("The original study (Hartley & Schwarz) used data through 2018, so 2019+ is a genuine out-of-sample test.")
@@ -169,7 +169,7 @@ with tab_robust:
         r, col = list(grid.index).index(entry), list(grid.columns).index(exit_)
         fig.add_shape(type="rect", x0=col - 0.5, x1=col + 0.5, y0=r - 0.5, y1=r + 0.5, line=dict(color="black", width=3))
         fig.update_layout(title="Sharpe for every entry/exit window (box = current)", xaxis_title="Exit vs month-end close", yaxis_title="Entry (days before month-end)", yaxis_autorange="reversed", height=470, margin=dict(t=50))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     with right:
         st.markdown("#### Is month-end special?")
         st.markdown(
@@ -191,7 +191,7 @@ with tab_trades:
     st.markdown(f"{len(t)} trades. Returns are for the holding window; *excess* subtracts T-bill interest, *net* also subtracts costs.")
     st.dataframe(
         t.style.format({"gross": "{:.2%}", "excess": "{:.2%}", "net_excess": "{:.2%}", "entry_close": "{:%Y-%m-%d}", "exit_close": "{:%Y-%m-%d}"}),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=420,
     )

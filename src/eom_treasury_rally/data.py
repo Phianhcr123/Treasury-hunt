@@ -58,6 +58,31 @@ def load_risk_free(refresh: bool = False) -> pd.Series:
     return (irx / 100.0 / 252.0).rename("rf")
 
 
+def load_option_inputs(ticker: str = "TLT", refresh: bool = False) -> pd.DataFrame:
+    """Unadjusted closes (option strikes are on the traded price), the MOVE index and dividends."""
+    path = CACHE_DIR / f"{ticker.lower()}_option_inputs.csv"
+    if path.exists() and not refresh:
+        return pd.read_csv(path, index_col=0, parse_dates=True)
+    raw = yf.download(ticker, start="1990-01-01", auto_adjust=False, actions=True, progress=False)
+    move = yf.download("^MOVE", start="1990-01-01", auto_adjust=True, progress=False)
+    if raw is None or raw.empty or move is None or move.empty:
+        raise DataError(f"Could not download option inputs for {ticker}.")
+
+    def col(frame: pd.DataFrame, name: str) -> pd.Series:
+        s = frame[name]
+        return s.iloc[:, 0] if isinstance(s, pd.DataFrame) else s
+
+    df = pd.DataFrame({"close": col(raw, "Close"), "dividend": col(raw, "Dividends")})
+    df.index = pd.DatetimeIndex(df.index).tz_localize(None).normalize()
+    m = col(move, "Close")
+    m.index = pd.DatetimeIndex(m.index).tz_localize(None).normalize()
+    df["move"] = m.reindex(df.index).ffill()
+    df = df.dropna(subset=["close", "move"])
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path)
+    return df
+
+
 def load_dataset(ticker: str, refresh: bool = False) -> pd.DataFrame:
     """Daily asset returns and risk-free returns on the asset's trading calendar."""
     close = load_close(ticker, refresh=refresh)

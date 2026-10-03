@@ -4,21 +4,54 @@ A backtest of the **month-end Treasury rally**. Bond index funds rebalance on th
 
 The strategy holds a Treasury ETF (TLT by default) from the close **3 trading days before month-end** to the **month-end close**. The rest of the time it sits in T-bills. The 3-day window was fixed up front, following Hartley & Schwarz, rather than chosen after looking at the results.
 
+The project also includes an **options overlay**: an American CRR binomial tree that embeds the temporary month-end drift and values TLT calls over the window. It's used to test whether calls are a better vehicle for the trade than the ETF.
+
 ## Results (TLT, Jul 2002 – Oct 2026, 2 bps cost per side)
 
 | | Month-end strategy | Buy & hold TLT |
 |---|---|---|
-| Sharpe | **0.72** | 0.18 |
+| Sharpe | **0.71** | 0.18 |
 | Excess return over T-bills / yr | 3.6% | 2.6% |
 | Max drawdown | −12% | −48% |
 | Time in market | 14% | 100% |
-| Avg trade (net) / hit rate | 0.30% / 62% (291 trades) | – |
+| Avg trade (net) / hit rate | 0.30% / 61% (290 trades) | – |
 
 - **Not luck:** a permutation test compares the month-end window with a random 3-day window in every month. The p-value is 0.0005.
-- **Robust to the window:** the heatmap shows every window that exits at the month-end close has a Sharpe of 0.53–0.75.
+- **Robust to the window:** every window that exits at the month-end close has a Sharpe of about 0.5–0.75.
 - **Decaying:** the Sharpe was 0.87 up to 2018 (the paper's sample period), 0.41 from 2019 on, and about 0 over the last 3 years.
+- **Holds on other bonds:** IEF (7–10 year Treasuries) has a Sharpe of 0.81.
 
 Full report and charts: [`reports/tlt/report.md`](reports/tlt/report.md).
+
+## Options overlay
+
+**Why a drift tree isn't a mispricing detector.** Option prices are set under the risk-neutral measure, so the underlying's expected return doesn't enter them. A dealer who sells you a call hedges with delta shares, and the drift helps that hedge exactly as much as it helps your call. A tree with an upward drift therefore values *every* call above market and every put below it, by roughly delta × drift. The month-end volatility isn't mispriced either: TLT is slightly *calmer* in the window (13.2% against 14.4% annualized).
+
+**What the overlay tests instead:** whether calls hold the drift more efficiently than the ETF, after spreads.
+
+Historical test, 287 months (Sharpe annualized from monthly trades):
+
+| | Avg per trade | Sharpe |
+|---|---|---|
+| ETF in window | +0.28% | **0.74** |
+| ATM 30-day call (as % of premium) | **+8.8%** | 0.65 |
+| Call sized to the same exposure as the ETF | +0.25% | 0.61 |
+| Delta-hedged call (the "mispricing") | −0.01% of spot | ≈ 0 |
+
+- **Calls capture the drift but never beat the ETF.** In-the-money, longer-dated calls come closest (Sharpe 0.71–0.76).
+- **Out-of-the-money calls suffer:** short-dated ones lose most of the edge to spreads, which can be 16–64% of the premium.
+- **The model is calibrated:** the drift tree predicted +10.3% per call trade after costs; the backtest realized +8.8%.
+- **What calls are good for:** leverage (about 30× for at-the-money calls) and capped downside, not extra edge.
+
+How the historical prices are built:
+
+- **Pricing model:** synthetic American CRR prices at a flat implied volatility, using real TLT ex-dividend dates.
+- **Volatility:** the MOVE bond-volatility index × duration 16, which matches Cboe's TLT implied-vol index (VXTLT).
+- **Costs:** a $0.01/share half-spread plus $0.65 per contract on each side.
+
+The **live scanner** pulls today's TLT call chain and backs out each contract's implied volatility. It then runs the drift tree over the next month-end window and ranks contracts by expected return per unit of risk, against the same figure for holding TLT.
+
+Report: [`reports/options/report.md`](reports/options/report.md).
 
 ## Run it
 
@@ -27,17 +60,20 @@ You need Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 ```bash
 uv sync
 
-# Interactive dashboard on http://localhost:8631
+# Interactive dashboard on http://localhost:8631 (ETF backtest + "Options Overlay" page)
 uv run streamlit run app.py --server.port 8631
 
-# Command-line report: prints stats, writes reports/<ticker>/report.md and PNG charts
+# ETF report: prints stats, writes reports/<ticker>/report.md and PNG charts
 uv run eom-treasury-rally --ticker TLT --entry 3 --exit 0 --cost-bps 2
+
+# Options report: historical call backtest, contract grid and live chain scan
+uv run eom-options --dte 30 --moneyness 1.0 --half-spread 0.01 --drift-bps 11
 
 # Tests
 uv run pytest
 ```
 
-CLI options:
+`eom-treasury-rally` options:
 
 - `--ticker`: TLT, IEF, EDV, GOVT or SHY.
 - `--entry N`: enter at the close N trading days before month-end.
@@ -46,10 +82,20 @@ CLI options:
 - `--start` / `--end`: restrict the date range.
 - `--refresh`: re-download data instead of using the cache.
 
+`eom-options` options:
+
+- `--dte`: days to expiry at entry.
+- `--moneyness`: strike divided by spot (1.0 is at the money).
+- `--half-spread`: dollars per share paid on each side.
+- `--drift-bps`: assumed excess drift per day inside the window.
+- `--no-scan`: skip the live option-chain scan.
+
 Data comes from Yahoo Finance and is cached in `data/`:
 
-- dividend-adjusted ETF closes;
-- the 13-week T-bill rate (`^IRX`), which is what cash earns.
+- dividend-adjusted and unadjusted ETF closes, plus dividends;
+- the 13-week T-bill rate (`^IRX`);
+- the MOVE index;
+- the live TLT option chain.
 
 ## Project layout
 
@@ -58,13 +104,21 @@ Data comes from Yahoo Finance and is cached in `data/`:
   - month-end calendar and position building;
   - backtest including costs and summary stats;
   - day-of-month profile, permutation test, window sensitivity grid, sub-period results.
-- `src/eom_treasury_rally/cli.py`: the report and static charts.
-- `app.py`: the Streamlit dashboard.
-- `tests/`: unit tests, including detecting a planted month-end effect and giving no false positives on pure noise.
+- `src/eom_treasury_rally/pricing.py`:
+  - Black-Scholes;
+  - CRR binomial pricing (American, discrete dividends);
+  - implied volatility;
+  - the drift tree.
+- `src/eom_treasury_rally/options_backtest.py`: the synthetic historical call overlay.
+- `src/eom_treasury_rally/scanner.py`: the live chain scan and the NYSE month-end calendar.
+- `src/eom_treasury_rally/cli.py`, `options_cli.py`: the reports and static charts.
+- `app.py`, `pages/2_Options_Overlay.py`: the Streamlit dashboard.
+- `tests/`: unit tests for calendar logic, costs, the planted-effect and pure-noise checks, pricing convergence, early exercise, implied-volatility round trips, and the drift tree.
 
 ## Assumptions and caveats
 
 - **Trade timing:** trades fill at the closing price, as with market-on-close orders. The trade dates come from the calendar, so the backtest doesn't use any information from the future.
-- **Incomplete final month:** if the data ends partway through a month, that month is skipped, because its last trading day isn't known yet.
+- **Partial months:** partial windows at the start or end of the data are skipped.
 - **ETFs, not futures:** Treasury futures would be cheaper to trade. But Yahoo's continuous futures series isn't roll-adjusted, and the quarterly rolls fall near month-end, which would contaminate exactly the window being tested.
+- **Synthetic option prices:** these test the stated hypothesis that the market prices options at a flat volatility. They can't show whether real quotes already lean toward the drift. Use the live scanner, or saved snapshots across several month-ends, to check that.
 - **Small, noisy returns:** about 0.3% per trade, with long flat periods. Report the recent decay alongside the headline Sharpe.

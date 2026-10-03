@@ -60,6 +60,9 @@ def positions(index: pd.DatetimeIndex, window: Window) -> pd.Series:
     held = (off["to_end"] > -window.entry) & (off["to_end"] <= min(window.exit, 0))
     if window.exit > 0:
         held |= off["from_end"] <= window.exit
+    # A window already in progress on the first day of data has no entry price.
+    if held.iloc[0]:
+        held.iloc[: int(np.argmin(held.to_numpy()))] = False
     return held.astype(int).rename("pos")
 
 
