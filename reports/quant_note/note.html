@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Month-end Treasury rally</title>
+<style>
+  @page { size: letter; margin: 1in; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Liberation Serif", "Times New Roman", Times, serif;
+    font-size: 11pt;
+    line-height: 1.28;
+    color: #1a1a1a;
+  }
+  h1 {
+    font-family: "Liberation Sans", Arial, sans-serif;
+    font-size: 16pt;
+    line-height: 1.15;
+    margin: 0 0 2px;
+    font-weight: 700;
+  }
+  .meta {
+    font-family: "Liberation Sans", Arial, sans-serif;
+    font-size: 11pt;
+    color: #333;
+    margin: 0 0 8px;
+  }
+  h2 {
+    font-family: "Liberation Sans", Arial, sans-serif;
+    font-size: 12pt;
+    margin: 9px 0 3px;
+    page-break-after: avoid;
+  }
+  p { margin: 0 0 6px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 4px 0 6px;
+    page-break-inside: avoid;
+    font-size: 11pt;
+    line-height: 1.2;
+  }
+  th, td {
+    border-bottom: 0.6pt solid #bbb;
+    padding: 2px 5px 2px 0;
+    text-align: right;
+    vertical-align: bottom;
+  }
+  th:first-child, td:first-child { text-align: left; }
+  th { font-family: "Liberation Sans", Arial, sans-serif; font-size: 11pt; font-weight: 700; border-bottom: 1pt solid #222; }
+  caption {
+    caption-side: bottom;
+    text-align: left;
+    font-size: 11pt;
+    color: #222;
+    padding-top: 2px;
+  }
+  figure { margin: 4px 0 6px; page-break-inside: avoid; }
+  img { width: 100%; height: auto; display: block; }
+  figcaption { font-size: 11pt; line-height: 1.25; margin-top: 2px; }
+  .refs { page-break-before: always; }
+  .refs p { padding-left: 1.1em; text-indent: -1.1em; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+
+<h1>Month-end Treasury rally</h1>
+<p class="meta">Systematic Trading, Gator Quant Hacks, 4 October 2026. One instrument, one pre-registered window.</p>
+
+<h2>1. Summary</h2>
+<p>Buy TLT at the close three trading days before month-end and sell at the month-end close. Hold T-bills on every other day. The other side of the trade is institutions that must add Treasury duration on the index rebalance date, whatever the price. The window was fixed before this backtest, following Hartley and Schwarz (2019), and was not chosen from the results below.</p>
+<p>Net of 2 basis points per side, the in-sample book (31 July 2002 to 30 September 2024) earned 4.0% a year over T-bills, with volatility of 5.1%, a Sharpe ratio of 0.78, a maximum drawdown of −12.4%, and turnover of 24 times capital a year. The holdout (1 October 2024 to 2 October 2026), evaluated on that same window, earned −1.0% a year over T-bills, with a Sharpe ratio of −0.26. A later look at a different window is disclosed in Section 5 and is not the strategy.</p>
+
+<h2>2. Economic hypothesis</h2>
+<p>This is a structural constraint, not a risk premium we invented and not a behavioral pattern we fitted. Treasury index rules add new bonds and drop short ones on the last business day of the month, which extends the index’s duration. Funds, insurers, and pensions that track those indices buy the longer bonds that day to avoid tracking error. Hartley and Schwarz document that life insurers are large net buyers of Treasuries on benchmark rebalancing dates, and that coupon-Treasury excess returns over 1990–2018 are concentrated in the last few trading days. Dealer balance sheets are tight at month-end, so that flow can move the price. The flow is written into the index rules, which change slowly. It fades once the rebalance is done.</p>
+<p>The testable prediction, stated before the results: excess returns should sit in the last few sessions and not in the rest of the month; a random three-day window inside the month should not match them; a spread of a few basis points should not erase them; and windows that also exit on the month-end close should look alike. The hypothesis fails if the pattern is gone after the paper’s sample, if realistic spreads remove it, or if the profit is only a relabeling of holding TLT all month.</p>
+
+<h2>3. Data and universe</h2>
+<p>The instrument is TLT, the iShares 20+ Year Treasury Bond ETF. Prices are dividend-adjusted daily closes from Yahoo Finance, 31 July 2002 through 2 October 2026, the life of the fund in this cache. Cash earns the 13-week T-bill yield, Yahoo series ^IRX, converted from a percent yield to a daily return by dividing by 100 and by 252, and lagged one day so the rate earned on day t is the rate known at the prior close. There is one name, and the sample starts when that name starts, so there is no membership list that drops dead constituents. A later dividend scales the whole adjusted history by the same factor; the rule uses the calendar, not a price signal, so that scaling does not move the trades. No revised macro release is used. If the downloaded history ends before a month is over, that month is not treated as a month-end.</p>
+<p>The holdout is the shorter of the last 20% of the sample and two years, then moved back to a month start so no trade straddles the cut. Here the two-year cap binds. In-sample ends 30 September 2024 (5,580 sessions, 266 trades). The holdout is 1 October 2024 to 2 October 2026 (503 sessions, 24 trades).</p>
+
+<h2>4. Methodology</h2>
+<p>The signal is the trading calendar. The position on a day is 1 when that day’s close-to-close return falls inside the window, and 0 otherwise. Entering at the close three days before month-end means the strategy earns the next three close-to-close moves: the sessions two days before month-end, one day before, and the last day. The decision does not use the close it is about to earn. The exit is the month-end close, as a market-on-close order. Weight is 1 or 0. There is no leverage and no volatility target. Uninvested capital earns the lagged T-bill rate. It trades twice a month: one entry and one exit.</p>
+<p>Cost is 2 basis points of traded notional on the entry and again on the exit, inside that month’s trade. TLT’s quoted spread is about one cent, roughly 1 basis point at recent prices; 2 basis points leaves room for commission. Headline numbers are net of this cost. The same trades are also run at 0 and at 4 basis points.</p>
+<p>The reported rule was fixed first: TLT, entry −3, exit 0, 2 basis points. An in-sample grid of 57 nearby entry and exit pairs is a check that the result is not one cell. IEF, the 7–10 year Treasury ETF, is one extra in-sample run of the same rule. Neither was used to replace the rule. Reproduce the headline table with:<br><span style="font-family: 'Liberation Mono', 'DejaVu Sans Mono', monospace; font-size: 11pt;">uv run eom-treasury-rally --ticker TLT --entry 3 --exit 0 --cost-bps 2 --evaluate-oos</span></p>
+
+<h2>5. Results</h2>
+<p>Every figure in this section is net of 2 basis points per side unless the row says otherwise. In-sample and out-of-sample are separate. “Excess” is the average daily return over T-bills, times 252. CAGR is the compounded total return, which includes T-bill interest. In the holdout, CAGR is positive because T-bill yields were high, while excess return is negative: the strategy lost to cash.</p>
+
+<table>
+  <thead>
+    <tr><th></th><th>In-sample strategy</th><th>In-sample TLT</th><th>Holdout strategy</th><th>Holdout TLT</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Excess return / year</td><td>4.0%</td><td>3.7%</td><td>−1.0%</td><td>−10.5%</td></tr>
+    <tr><td>CAGR</td><td>5.5%</td><td>4.3%</td><td>2.9%</td><td>−7.0%</td></tr>
+    <tr><td>Volatility</td><td>5.1%</td><td>14.5%</td><td>4.0%</td><td>11.6%</td></tr>
+    <tr><td>Sharpe</td><td>0.78</td><td>0.26</td><td>−0.26</td><td>−0.91</td></tr>
+    <tr><td>Max drawdown</td><td>−12.4%</td><td>−48.4%</td><td>−5.6%</td><td>−14.1%</td></tr>
+    <tr><td>Turnover</td><td>24.0×</td><td>0</td><td>24.0×</td><td>0</td></tr>
+    <tr><td>Trades / hit rate</td><td>266 / 62%</td><td>—</td><td>24 / 54%</td><td>—</td></tr>
+  </tbody>
+  <caption>Table 1. Net of 2 bps per side. TLT columns are buy-and-hold over the same days.</caption>
+</table>
+
+<p>Before costs, the in-sample Sharpe is 0.87 and the average trade earns 0.37% over T-bills. At 4 basis points per side it is 0.69. The holdout Sharpe is −0.14 before costs and −0.37 at 4 basis points. A permutation test on the in-sample months draws 2,000 random windows of the same length (seed 7). Their average trade earns 0.03% before costs. The month-end window’s p-value is 0.0005.</p>
+<p>Figure 1 shows where that premium sits. The last trading day averages +2.0 basis points of excess (t-statistic 3.8) and the day before it +1.1 (t-statistic 2.3). The first session of the next month, which the strategy does not hold, is negative. Figure 2 is the equity curve of excess returns, with the holdout marked.</p>
+
+<figure>
+  <img src="profile.png" alt="Average excess return by day of month">
+  <figcaption>Figure 1. In-sample mean excess return by day of month, with 95% confidence intervals. Blue bars are the three days the strategy holds.</figcaption>
+</figure>
+
+<figure>
+  <img src="equity.png" alt="Equity curve of excess returns">
+  <figcaption>Figure 2. Growth of $1 in excess of T-bills. The amber band is 1 October 2024 onward and was not used to choose the window.</figcaption>
+</figure>
+
+<p>Inside the in-sample period the edge is not one year. Twenty-one of twenty-three calendar years have a positive excess return; the two losers, 2004 and 2006, are each within half a percent of zero. The largest year is 2010, at +12%. Through 2018, the paper’s sample, the Sharpe is 0.86. From 2019 through September 2024 it is 0.58. The last three in-sample years are 0.59. The holdout is weaker than that decay. Over two years, noise alone moves a Sharpe ratio by about 0.7. The gap from 0.78 to −0.26 is about one and a half of those standard errors. With 24 trades that is a soft rejection, and it is still the result.</p>
+<p>The premium is not “just own TLT.” A regression of daily strategy excess on daily TLT excess, in-sample, has a beta of 0.12, an R² of 0.12, and an intercept of 3.5% a year. Adding SPY excess leaves the equity beta at 0.01. IEF with the same window, in-sample only, has a Sharpe ratio of 0.83, excess return of 2.1% a year, volatility of 2.5%, and a maximum drawdown of −6.1%. That check was not repeated on the holdout.</p>
+<p>Among the ten in-sample windows that exit on the month-end close, Sharpe ratios run from 0.58 to 0.79. Entry −3 is 0.78. Entry −2 is 0.79. We did not switch. The full 57-cell grid runs from −0.18 to 0.79, so windows that do not exit at month-end are not uniformly good. Three holdout evaluations are in <span style="font-family: 'Liberation Mono', monospace; font-size: 11pt;">reports/oos_evaluations.csv</span>. The pre-registered window was scored at −0.26. Entry −10 was then scored on the same holdout, at +0.07. The original window was scored once more, again −0.26. Entry −10 is not the strategy. The strategy was not changed after the holdout.</p>
+
+<h2>6. Risk management</h2>
+<p>Gross exposure and net exposure both equal the weight, so they are 1 for three sessions a month and 0 otherwise. There is one name and no leverage. There is no stop and no volatility cut. The size limit is the calendar: the book is flat about 86% of days. The worst in-sample month is January 2009, at −5.1% of excess return. The best is November 2008, at +4.3%. Skewness of monthly excess returns is −0.13. The in-sample maximum drawdown is −12.4%, against −48% for holding TLT the whole time. The holdout drawdown is −5.6%.</p>
+<p>The risk that remains is a three-day long-duration bet. A jump in yields inside the window hits the whole position, which is what January 2009 was. The strategy does not turn itself off when the premium shrinks. The pre-committed response to the failed holdout is to keep the window and cut confidence, not to search for a new entry. A live book would also cap order size at 1% of TLT’s average daily volume, as in Section 7.</p>
+
+<h2>7. Liquidity and capacity</h2>
+<p>At a small size the cost is the 2 basis point charge already in Table 1. Doubling it to 4 basis points leaves the in-sample Sharpe at 0.69. Capacity is a different question. Each order is the whole fund, and there are 24 such orders a year, all at the close. TLT’s median dollar volume is about $3.0 billion a day over 2023 through September 2024, and about $2.9 billion from the holdout start through 2 October 2026. Recent daily volatility is about 1.05%. A one-cent spread is about 1 basis point.</p>
+<p>Impact on an order of size Q is modeled as daily volatility times the square root of Q divided by daily dollar volume, the same square-root law as the track’s capacity dial. Because each order is the whole fund, the dial’s default — spreading 24 times turnover across all 252 sessions — does not apply. That smear would put capacity near $875 million. Using the 24 real orders:</p>
+
+<table>
+  <thead>
+    <tr><th>Capital</th><th>Share of daily volume</th><th>Impact per trade</th><th>Net Sharpe</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>$1 million</td><td>0.03%</td><td>1.9 bps</td><td>0.74</td></tr>
+    <tr><td>$10 million</td><td>0.33%</td><td>6.1 bps</td><td>0.54</td></tr>
+    <tr><td>$18 million</td><td>0.60%</td><td>8.1 bps</td><td>0.44</td></tr>
+    <tr><td>$30 million</td><td>1.0%</td><td>10.5 bps</td><td>0.33</td></tr>
+    <tr><td>$83 million</td><td>2.8%</td><td>17 bps</td><td>0.00</td></tr>
+  </tbody>
+  <caption>Table 2. Square-root impact on 24 full-fund orders a year. Net Sharpe starts from the in-sample gross Sharpe of 0.87 and a 1 bp half-spread. “Half the edge” is about $18 million. The edge is gone near $83 million.</caption>
+</table>
+
+<p>The edge is only about 4.4% a year before costs, and impact is paid 24 times, so the book feels capacity while it is still under 1% of TLT’s volume. The operating cap is $30 million, about 1% of average daily volume, where the modeled Sharpe is already 0.33. Raising the fixed fee from 1 to 2 basis points only moves the zero-Sharpe size from $83 million to $74 million. Doubling the impact coefficient, a harsher version of the same law, cuts that size to about $21 million. If a market-on-close order can use only 20% of daily volume, the half-edge size falls to about $4 million. That 20% is a sensitivity, not a measured auction share. A hackathon-sized account sits where the flat 2 basis point cost is the right one.</p>
+
+<h2>8. Limitations and next steps</h2>
+<p>The holdout failed. The in-sample record is broad across years and across nearby month-end windows, and it is not TLT’s beta, but the two years after September 2024 do not pay the premium. Treating 0.78 as the expected live Sharpe would ignore the number the test was built to produce.</p>
+<p>What we tried and did not keep: after seeing the holdout, entry −10 was evaluated on the same dates and scored a Sharpe ratio of +0.07. That is a second look at the test set. It is reported here and discarded. We also did not promote the in-sample grid’s best exit-at-zero cell. Treasury futures were not used: a continuous series that is not roll-adjusted, with rolls near month-end, would contaminate the window the test is about.</p>
+<p>Three other strategies are in the repository and are not this result: an options overlay on the same month-end window, an adaptive-trend book, and a diversified-trend book. They were not selected because their return per unit of risk does not outweigh this one. The month-end TLT book is about 5% volatility in a liquid ETF. The other books take more risk, more parameters, or both.</p>
+<p>What would break the strategy is a change in the index rules, or enough front-running that the three days no longer contain the flow. The post-2018 decline and the negative holdout are what that break would look like, and they may already be it. With more time we would measure closing-auction volume, so the capacity bound is not a guess about the 20% share, and we would test whether the premium scales with the size of the month’s index extension. We would not add parameters to the window.</p>
+
+<div class="refs">
+<h2>References</h2>
+<p>Hartley, Jonathan, and Krista Schwarz. “Predictable End-of-Month Treasury Returns.” 22 November 2019. SSRN 3440417.</p>
+<p>Federal Reserve Bank of New York. “End-of-Month Liquidity in the Treasury Market.” Liberty Street Economics, September 2024.</p>
+</div>
+
+</body>
+</html>
