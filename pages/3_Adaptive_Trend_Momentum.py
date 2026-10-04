@@ -3,11 +3,25 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from eom_treasury_rally.holdout_ui import (
+    SPX_LINE,
+    SPX_NAME,
+    Line,
+    comparison_table,
+    equity_chart,
+    growth,
+    locked_message,
+    log_evaluation,
+    setup_holdout,
+    show_equity_chart,
+    spx_growth,
+)
 from eom_treasury_rally.trend_backtest import (
     TREND_PAIRS,
     load_pair_dataset,
     run_trend_backtest,
     trend_lookback_grid,
+    trend_metrics,
 )
 
 st.set_page_config(
@@ -15,6 +29,32 @@ st.set_page_config(
     page_icon="⚡",
     layout="wide",
 )
+
+
+@st.cache_data(show_spinner=False)
+def get_pair(asset: str, safe: str) -> pd.DataFrame:
+    return load_pair_dataset(asset, safe)
+
+
+@st.cache_data(show_spinner=False)
+def get_grid(df: pd.DataFrame, signal_type: str, cost_bps: float) -> pd.DataFrame:
+    return trend_lookback_grid(df, lookbacks=[50, 100, 150, 200, 250], vol_targets=[0.10, 0.12, 0.15, 0.18, 0.20], signal_type=signal_type, cost_bps=cost_bps)
+
+
+def comparison_rows(sample: str, d: pd.DataFrame, d_2x: pd.DataFrame, cost_bps: float, asset: str) -> list[dict]:
+    turnover = float(d["turnover"].mean() * 252)
+
+    def row(series: str, total: pd.Series, excess: pd.Series, turn: float) -> dict:
+        m = trend_metrics(total, excess)
+        return {"Sample": sample, "Series": series, **{k: m.get(k, np.nan) for k in ["Excess return (ann.)", "Volatility (ann.)", "Sharpe", "Max drawdown"]}, "Turnover (×/yr)": turn}
+
+    return [
+        row(f"Strategy, net of {cost_bps:g} bps", d["strat_ret"], d["strat_excess"], turnover),
+        row(f"Strategy, net of {2 * cost_bps:g} bps (2× costs)", d_2x["strat_ret"], d_2x["strat_excess"], turnover),
+        row("Strategy, before costs", d["strat_gross_ret"], d["strat_gross_excess"], turnover),
+        row(f"Buy & hold {asset}", d["bh_ret"], d["bh_excess"], 0.0),
+    ]
+
 
 st.title("Adaptive Trend-Following & Volatility-Targeting Overlay")
 st.markdown(
@@ -45,69 +85,92 @@ with st.sidebar:
 
     cost_bps = st.slider("Cost per Trade (bps)", 0.0, 15.0, 3.0, 0.5, help="Estimated bid-ask spread + slippage per turn.")
 
-    if st.button("Refresh Data", use_container_width=True):
+    if st.button("Refresh Data", width="stretch"):
         st.cache_data.clear()
 
 try:
     with st.spinner(f"Loading {asset_ticker} and {safe_ticker} data..."):
-        df = load_pair_dataset(asset_ticker, safe_ticker)
+        df = get_pair(asset_ticker, safe_ticker)
 except Exception as e:
     st.error(f"Error fetching data: {e}")
     st.stop()
 
 min_d, max_d = df.index[0].date(), df.index[-1].date()
 with st.sidebar:
-    date_range = st.slider("Backtest Period", min_value=min_d, max_value=max_d, value=(min_d, max_d), format="YYYY-MM")
+    date_range = st.slider(
+        "Backtest Period", min_value=min_d, max_value=max_d, value=(min_d, max_d), format="YYYY-MM",
+        help="The holdout is cut from the end of whatever sample you pick.",
+    )
 
 df_slice = df.loc[str(date_range[0]) : str(date_range[1])]
-
-if len(df_slice) < lookback + 50:
-    st.warning("Please choose a longer date range to account for the lookback window.")
+if len(df_slice) < 2 * 252:
+    st.warning("Pick a sample of at least two years.")
     st.stop()
 
+config = (signal_type, lookback, enable_vol_target, vol_target, cost_bps, str(date_range[0]), str(date_range[1]))
+h = setup_holdout(f"Adaptive trend · {pair_choice}", df_slice.index, config)
+df_is = df_slice.loc[: h.is_end]
+if len(df_is) < lookback + 50:
+    st.warning("Please choose a longer date range: the in-sample period must cover the lookback window.")
+    st.stop()
+
+params = dict(lookback=lookback, signal_type=signal_type, vol_target_ann=vol_target, enable_vol_target=enable_vol_target)
 with st.spinner("Calculating strategy results..."):
-    res = run_trend_backtest(
-        df_slice,
-        lookback=lookback,
-        signal_type=signal_type,
-        vol_target_ann=vol_target,
-        enable_vol_target=enable_vol_target,
-        cost_bps=cost_bps,
+    # Signals and vol scaling only use past prices, so one run over the whole sample can be cut by date.
+    res_all = run_trend_backtest(df_slice, cost_bps=cost_bps, **params)
+    res_all_2x = run_trend_backtest(df_slice, cost_bps=2 * cost_bps, **params)
+    res = run_trend_backtest(df_is, cost_bps=cost_bps, **params)
+    spx = spx_growth(df_slice.index, df_slice["rf"])
+
+d_all = res_all.daily
+d_is = res.daily
+d_oos = d_all.loc[h.oos_start :]
+if h.revealed:
+    log_evaluation(
+        h,
+        trend_metrics(d_oos["strat_ret"], d_oos["strat_excess"])["Sharpe"],
+        f"{pair_choice}, {signal_type} {lookback}d, vol target {f'{vol_target:.0%}' if enable_vol_target else 'off'}, {cost_bps:g} bps",
     )
 
 strat = res.summary_stats["Adaptive Trend Strategy"]
 bh = res.summary_stats["Buy & Hold Underlying"]
 
+st.subheader(f"In-sample: {d_is.index[0]:%Y-%m-%d} to {d_is.index[-1]:%Y-%m-%d}")
 c = st.columns(6)
 c[0].metric("Sharpe (Strategy)", f"{strat['Sharpe']:.2f}", f"{strat['Sharpe'] - bh['Sharpe']:+.2f} vs B&H")
 c[1].metric("CAGR", f"{strat['CAGR']:.2%}", f"B&H {bh['CAGR']:.2%}", delta_color="off", delta_arrow="off")
 c[2].metric("Excess Return / yr", f"{strat['Excess return (ann.)']:.2%}", f"B&H {bh['Excess return (ann.)']:.2%}", delta_color="off", delta_arrow="off")
 c[3].metric("Volatility (ann.)", f"{strat['Volatility (ann.)']:.2%}", f"B&H {bh['Volatility (ann.)']:.2%}", delta_color="off", delta_arrow="off")
 c[4].metric("Max Drawdown", f"{strat['Max drawdown']:.1%}", f"B&H {bh['Max drawdown']:.1%}", delta_color="off", delta_arrow="off")
-c[5].metric("Trades / Hit Rate", f"{strat['Trades']} trades", f"{strat['Hit rate']:.0%} win rate", delta_color="off", delta_arrow="off")
+c[5].metric("Trades / Hit Rate", f"{strat['Trades']} trades", f"{strat['Hit rate']:.0%} win rate · {strat['Turnover (ann.)']:.1f}×/yr turnover", delta_color="off", delta_arrow="off")
 
-tab_perf, tab_exposure, tab_robust, tab_trades, tab_theory = st.tabs([
+tab_perf, tab_oos, tab_exposure, tab_robust, tab_trades, tab_theory = st.tabs([
     "Performance & Drawdown",
+    "Out-of-sample",
     "Dynamic Asset Allocation",
     "Robustness & Heatmap",
     "Trade Log",
     "Why It Works (Market Inefficiency)",
 ])
 
-d = res.daily
+# Everything outside the out-of-sample tab stops at the in-sample end until the holdout is evaluated.
+d = d_all if h.revealed else d_is
 
 with tab_perf:
-    fig_cum = go.Figure()
-    fig_cum.add_trace(go.Scatter(x=d.index, y=(1 + d["strat_excess"]).cumprod(), name="Adaptive Trend Strategy", line=dict(width=2.5, color="#2563eb")))
-    fig_cum.add_trace(go.Scatter(x=d.index, y=(1 + d["bh_excess"]).cumprod(), name=f"Buy & Hold {asset_ticker}", line=dict(width=1.5, color="#9ca3af")))
-    fig_cum.update_layout(
-        title="Excess Growth of $1 over Cash / T-Bills (Log Scale)",
-        yaxis_type="log",
-        height=420,
-        legend=dict(orientation="h", y=-0.15),
-        margin=dict(t=50, b=10),
+    lines = [
+        Line(f"Adaptive Trend Strategy (net of {cost_bps:g} bps)", growth(d_all["strat_excess"]), dict(width=2.5, color="#2563eb")),
+        Line("Adaptive Trend Strategy (before costs)", growth(d_all["strat_gross_excess"]), dict(width=1.5, color="#2563eb", dash="dot")),
+        Line(f"Buy & Hold {asset_ticker}", growth(d_all["bh_excess"]), dict(width=1.5, color="#9ca3af")),
+    ]
+    if spx is not None:
+        s = spx.loc[d_all.index]
+        lines.append(Line(SPX_NAME, s / s.iloc[0], SPX_LINE))
+    fig_cum, target = equity_chart(lines, h, "Excess Growth of $1 over Cash / T-Bills (Log Scale)")
+    show_equity_chart(fig_cum, target, h)
+    st.caption(
+        "Dotted blue line: the same positions before trading costs; the gap to the solid line is the cost drag. "
+        "Dashed amber line: where the out-of-sample holdout starts. Green line: the S&P 500 (SPY with dividends) for reference."
     )
-    st.plotly_chart(fig_cum, use_container_width=True)
 
     left, right = st.columns(2)
     with left:
@@ -126,7 +189,7 @@ with tab_perf:
             legend=dict(orientation="h", y=-0.2),
             margin=dict(t=50),
         )
-        st.plotly_chart(fig_dd, use_container_width=True)
+        st.plotly_chart(fig_dd, width="stretch")
 
     with right:
         y_strat = d["strat_excess"].groupby(d.index.year).apply(lambda r: (1 + r).prod() - 1) * 100
@@ -143,12 +206,43 @@ with tab_perf:
             legend=dict(orientation="h", y=-0.2),
             margin=dict(t=50),
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width="stretch")
 
     table = pd.DataFrame(res.summary_stats).T
     pct_cols = ["CAGR", "Excess return (ann.)", "Volatility (ann.)", "Max drawdown", "Time in market", "Hit rate", "Avg trade return"]
-    fmt = {k: "{:.2%}" for k in pct_cols} | {"Sharpe": "{:.2f}", "Trades": "{:.0f}"}
-    st.dataframe(table.style.format(fmt, na_rep="–"), use_container_width=True)
+    fmt = {k: "{:.2%}" for k in pct_cols} | {"Sharpe": "{:.2f}", "Trades": "{:.0f}", "Turnover (ann.)": "{:.1f}×"}
+    st.dataframe(table.style.format(fmt, na_rep="–"), width="stretch")
+    st.caption("In-sample only. Turnover is the total change in position weight per year as a multiple of capital.")
+
+with tab_oos:
+    if not h.revealed:
+        locked_message(h)
+    else:
+        d_oos_2x = res_all_2x.daily.loc[h.oos_start :]
+        st.markdown(f"#### Out-of-sample: {d_oos.index[0]:%Y-%m-%d} to {d_oos.index[-1]:%Y-%m-%d}")
+        rows = comparison_rows("In-sample", d_is, res_all_2x.daily.loc[d_is.index[0] : h.is_end], cost_bps, asset_ticker) + comparison_rows("Out-of-sample", d_oos, d_oos_2x, cost_bps, asset_ticker)
+        st.dataframe(comparison_table(rows), width="stretch", hide_index=True)
+
+        is_sharpe = strat["Sharpe"]
+        oos_sharpe = trend_metrics(d_oos["strat_ret"], d_oos["strat_excess"])["Sharpe"]
+        se = 1 / np.sqrt(len(d_oos) / 252)
+        st.markdown(
+            f"Net Sharpe **{is_sharpe:.2f}** in-sample against **{oos_sharpe:.2f}** out-of-sample. "
+            f"Over {len(d_oos) / 252:.1f} years, noise alone moves a Sharpe by about ±{se:.1f} (one standard error), "
+            f"so the out-of-sample number is {'within' if abs(oos_sharpe - is_sharpe) <= se else 'outside'} one standard error of in-sample. "
+            "Report it either way."
+        )
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=d_oos.index, y=growth(d_oos["strat_excess"]), name=f"Strategy (net of {cost_bps:g} bps)", line=dict(width=2.5, color="#2563eb")))
+        fig.add_trace(go.Scatter(x=d_oos.index, y=growth(d_oos["strat_gross_excess"]), name="Strategy (before costs)", line=dict(width=1.5, color="#2563eb", dash="dot")))
+        fig.add_trace(go.Scatter(x=d_oos.index, y=growth(d_oos_2x["strat_excess"]), name=f"Strategy (net of {2 * cost_bps:g} bps)", line=dict(width=1.5, color="#7c3aed")))
+        fig.add_trace(go.Scatter(x=d_oos.index, y=growth(d_oos["bh_excess"]), name=f"Buy & Hold {asset_ticker}", line=dict(width=1.5, color="#9ca3af")))
+        if spx is not None:
+            s = spx.loc[d_oos.index]
+            fig.add_trace(go.Scatter(x=d_oos.index, y=s / s.iloc[0], name=SPX_NAME, line=SPX_LINE))
+        fig.update_layout(title="Out-of-sample growth of $1 in excess of T-bills", height=400, legend=dict(orientation="h", y=-0.2), margin=dict(t=50))
+        st.plotly_chart(fig, width="stretch")
 
 with tab_exposure:
     st.subheader("Dynamic Exposure & Risk Allocation")
@@ -162,19 +256,13 @@ with tab_exposure:
         height=380,
         margin=dict(t=50),
     )
-    st.plotly_chart(fig_w, use_container_width=True)
+    st.plotly_chart(fig_w, width="stretch")
 
 with tab_robust:
     st.subheader("Parameter Sensitivity Analysis")
     st.markdown("A robust quantitative edge is resilient across parameter choices (lookback windows & target volatilities), rather than an overfitted peak.")
     with st.spinner("Generating sensitivity heatmap..."):
-        grid_df = trend_lookback_grid(
-            df_slice,
-            lookbacks=[50, 100, 150, 200, 250],
-            vol_targets=[0.10, 0.12, 0.15, 0.18, 0.20],
-            signal_type=signal_type,
-            cost_bps=cost_bps,
-        )
+        grid_df = get_grid(df_is, signal_type, cost_bps)
 
         z = grid_df.to_numpy(dtype=float)
         fig_grid = go.Figure(
@@ -198,12 +286,17 @@ with tab_robust:
             height=420,
             margin=dict(t=50),
         )
-        st.plotly_chart(fig_grid, use_container_width=True)
+        st.plotly_chart(fig_grid, width="stretch")
+    st.caption(f"In-sample data only (up to {h.is_end:%Y-%m-%d}), so the heatmap can't be used to tune on the holdout.")
 
 with tab_trades:
     st.subheader("Recorded Trend Trades")
-    t_df = res.trades.copy()
+    t_df = res.trades.assign(sample="In-sample")
+    if h.revealed and not res_all.trades.empty:
+        oos_t = res_all.trades[res_all.trades["exit_date"] >= h.oos_start].assign(sample="Out-of-sample")
+        t_df = pd.concat([t_df, oos_t], ignore_index=True)
     if not t_df.empty:
+        st.caption("The last in-sample trade is closed at the in-sample end. Out-of-sample rows are trades still open on or after the holdout start.")
         st.dataframe(
             t_df.style.format({
                 "trade_return": "{:.2%}",
@@ -212,7 +305,7 @@ with tab_trades:
                 "exit_date": "{:%Y-%m-%d}",
                 "days_held": "{:.0f}",
             }),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=400,
         )
@@ -240,5 +333,10 @@ with tab_theory:
 - **Moskowitz, Ooi, Pedersen (2012):** *"Time Series Momentum"*, Journal of Financial Economics. Documented persistent Sharpe > 1.0 across 58 liquid instruments over 25+ years.
 - **Meb Faber (2007):** *"A Quantitative Approach to Tactical Asset Allocation"*, Journal of Wealth Management.
 - **AQR Capital Management:** Multi-asset trend-following white papers demonstrating tail-risk protection and superior Sharpe enhancement.
+
+### Out-of-sample holdout
+The most recent 20% of the selected period or 2 years, whichever is shorter, is hidden behind the amber window on the
+equity chart. Metrics, the heatmap and the trade log use the in-sample period only until you click the window.
+Leverage above 1× (vol targeting allows up to 1.5×) isn't charged a financing cost.
 """
     )

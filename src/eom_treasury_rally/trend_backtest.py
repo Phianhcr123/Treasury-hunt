@@ -47,6 +47,30 @@ def load_pair_dataset(asset_ticker: str, safe_ticker: str = "BIL", refresh: bool
     return df
 
 
+def trend_metrics(r_series: pd.Series, excess_series: pd.Series) -> Dict[str, float]:
+    """CAGR, excess return, volatility, Sharpe and max drawdown for a slice of daily returns."""
+    n = len(r_series)
+    if n == 0:
+        return {}
+    cagr = (1 + r_series).prod() ** (TRADING_DAYS / n) - 1
+    vol = excess_series.std() * np.sqrt(TRADING_DAYS)
+    mean_excess = excess_series.mean() * TRADING_DAYS
+    sharpe = mean_excess / vol if vol > 1e-6 else 0.0
+
+    cum = (1 + r_series).cumprod()
+    peak = cum.cummax()
+    dd = (cum - peak) / peak
+    max_dd = dd.min()
+
+    return {
+        "CAGR": cagr,
+        "Excess return (ann.)": mean_excess,
+        "Volatility (ann.)": vol,
+        "Sharpe": sharpe,
+        "Max drawdown": max_dd,
+    }
+
+
 @dataclass
 class DualMomentumResult:
     daily: pd.DataFrame
@@ -104,6 +128,10 @@ def run_trend_backtest(
 
     d["signal"] = signal
     d["target_weight"] = target_weight
+    d["turnover"] = weight_change
+    d["cost"] = cost
+    d["strat_gross_ret"] = gross_ret
+    d["strat_gross_excess"] = gross_ret - d["rf"]
     d["strat_ret"] = net_ret
     d["strat_excess"] = net_ret - d["rf"]
     d["bh_ret"] = d["asset_ret"]
@@ -112,31 +140,9 @@ def run_trend_backtest(
     # Drop warm-up period
     d = d.iloc[lookback + 25 :].copy()
 
-    # Calculate summary metrics
-    def calc_metrics(r_series: pd.Series, excess_series: pd.Series) -> Dict[str, float]:
-        n = len(r_series)
-        if n == 0:
-            return {}
-        cagr = (1 + r_series).prod() ** (TRADING_DAYS / n) - 1
-        vol = excess_series.std() * np.sqrt(TRADING_DAYS)
-        mean_excess = excess_series.mean() * TRADING_DAYS
-        sharpe = mean_excess / vol if vol > 1e-6 else 0.0
-        
-        cum = (1 + r_series).cumprod()
-        peak = cum.cummax()
-        dd = (cum - peak) / peak
-        max_dd = dd.min()
-
-        return {
-            "CAGR": cagr,
-            "Excess return (ann.)": mean_excess,
-            "Volatility (ann.)": vol,
-            "Sharpe": sharpe,
-            "Max drawdown": max_dd,
-        }
-
-    strat_stats = calc_metrics(d["strat_ret"], d["strat_excess"])
-    bh_stats = calc_metrics(d["bh_ret"], d["bh_excess"])
+    strat_stats = trend_metrics(d["strat_ret"], d["strat_excess"])
+    strat_stats["Turnover (ann.)"] = float(d["turnover"].mean() * TRADING_DAYS)
+    bh_stats = trend_metrics(d["bh_ret"], d["bh_excess"])
 
     # Calculate trade state changes
     position_changes = (signal.diff() != 0) & (signal.notna())
