@@ -87,12 +87,14 @@ uv run pytest
 
 ### Out-of-sample holdout
 
-Following the track rule, the most recent 20% of history or the most recent 2 years, whichever is shorter, is held out. The cut is moved back to the start of its month, so no trade straddles it. For TLT the holdout is 2024-10-01 onward.
+Following the track rule, the most recent 20% of the selected sample or the most recent 2 years, whichever is shorter, is held out. The cut is moved back to the start of its month, so no monthly trade straddles it. For the full TLT history the holdout is 2024-10-01 onward. Every strategy page (month-end rally, options overlay, adaptive trend, diversified trend) uses the same rule, and each strategy has its own holdout. Shrinking the sample slider shortens the holdout to 20% once 20% is under 2 years.
 
-- **Hidden by default.** The CLI report and every dashboard number (metrics, heatmap, permutation test, sub-periods, trades) use in-sample data only.
-- **Revealing it.** On the dashboard, tick "I've finished tuning on in-sample data" in the sidebar and press **Evaluate out-of-sample**. The "Out-of-sample" tab then shows in-sample and out-of-sample side by side: net of costs, net of 2× costs, before costs, and buy & hold, with Sharpe, drawdown, turnover and an equity curve.
-- **Audit log.** Every setting evaluated on the holdout is appended to `reports/oos_evaluations.csv`. Report every look in the quant note.
+- **Hidden by default.** The CLI report and every dashboard number use in-sample data only, including the heatmaps, permutation test, sub-periods, sensitivity tables, contract grid and trade logs. While locked, the equity chart's axis is scaled on in-sample data only.
+- **Revealing it.** The equity chart ends in an amber "out-of-sample locked" window, with a dashed line where the holdout starts. Click the window to evaluate it once. The out-of-sample section then shows in-sample and out-of-sample side by side: net of costs, net of 2× costs, before costs, and the benchmark, with Sharpe, drawdown, turnover and an equity curve. The sidebar's **Relock** button hides it again.
+- **Leak alert.** Changing any setting after revealing shows a "TEST SET LEAKED" alert with the number of peeks this session.
+- **Audit log.** Every strategy and setting evaluated on the holdout is appended to `reports/oos_evaluations.csv`. Report every look in the quant note.
 - **Gross vs net.** Equity curves draw the strategy before costs as a dotted line next to the net line, so the cost drag is visible. Every reported number is net of costs unless labelled "before costs".
+- **S&P 500 reference.** Each equity chart also shows SPY with dividends, in excess of T-bills, over the same period.
 
 `eom-options` options:
 
