@@ -282,7 +282,9 @@ with tab_oos:
             "Hit rate": "{:.0%}",
             "Avg trade": "{:.2%}",
         }
-        st.dataframe(comp.style.format(comp_fmt, na_rep="–"), width="stretch", hide_index=True)
+        for col, f in comp_fmt.items():
+            comp[col] = comp[col].map(lambda v, f=f: "–" if pd.isna(v) else f.format(v))
+        st.dataframe(comp, width="stretch", hide_index=True)
 
         is_sharpe = s["Month-end strategy"]["Sharpe"]
         oos_sharpe_net = summary(oos_res)["Month-end strategy"]["Sharpe"]
