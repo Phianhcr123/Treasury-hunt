@@ -93,6 +93,8 @@ def run_options_backtest(
         # Same dollar delta as $1 in the ETF; the rest of the dollar sits in T-bills.
         alloc = buy / (delta * s0) if delta > 0 else np.nan
         option_ret = sell / buy - 1
+        alloc_gross = c0 / (delta * s0) if delta > 0 else np.nan
+        option_ret_gross = c1 / c0 - 1
         row = {
             "entry": t0.date(),
             "exit": t1.date(),
@@ -106,6 +108,9 @@ def run_options_backtest(
             "rf_window": rf_win,
             "call_ret": option_ret,
             "call_overlay_ret": alloc * option_ret + (1 - alloc) * rf_win,
+            "etf_ret_gross": etf_ret + 2 * etf_cost_bps / 10_000,
+            "call_ret_gross": option_ret_gross,
+            "call_overlay_ret_gross": alloc_gross * option_ret_gross + (1 - alloc_gross) * rf_win,
             "delta_hedged_pnl": ((c1 - c0) - delta * (s1 - s0)) / s0,
             "cost_share_of_premium": 2 * cost / c0,
         }
@@ -142,10 +147,10 @@ def options_summary(trades: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def iv_proxy_check(ticker: str = "TLT", duration: float = 16.0) -> dict[str, float]:
+def iv_proxy_check(ticker: str = "TLT", duration: float = 16.0, end: str | None = None) -> dict[str, float]:
     """How the MOVE-based implied-vol proxy compares with subsequent realized TLT volatility."""
-    opt = load_option_inputs(ticker)
-    adj = load_dataset(ticker)
+    opt = load_option_inputs(ticker).loc[:end]
+    adj = load_dataset(ticker).loc[:end]
     iv = iv_proxy(opt["move"], duration).reindex(adj.index)
     fwd_rv = adj["ret"][::-1].rolling(21).std()[::-1].shift(-1) * np.sqrt(252)
     both = pd.concat([iv, fwd_rv], axis=1, keys=["iv", "rv"]).dropna()

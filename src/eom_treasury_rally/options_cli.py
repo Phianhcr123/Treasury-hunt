@@ -17,11 +17,14 @@ GRID_DTE = (7, 14, 30, 60)
 GRID_MONEYNESS = (0.98, 1.0, 1.02)
 
 
-def contract_grid(window: Window, half_spread: float) -> pd.DataFrame:
+def contract_grid(window: Window, half_spread: float, start: str | None = None, end: str | None = None) -> pd.DataFrame:
+    """Sharpe by expiry and strike, using only trades entered on or after `start` and closed by `end`."""
     rows = []
     for dte in GRID_DTE:
         for m in GRID_MONEYNESS:
             t = run_options_backtest(window, OptionSpec(dte=dte, moneyness=m, half_spread=half_spread), with_model=False)
+            # Cut trades rather than prices, so options near the cut are still priced with their known dividends.
+            t = t[(pd.to_datetime(t["entry"]) >= pd.Timestamp(start or "1900-01-01")) & (pd.to_datetime(t["exit"]) <= pd.Timestamp(end or "2260-01-01"))]
             s = options_summary(t)
             rows.append(
                 {

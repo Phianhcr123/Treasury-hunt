@@ -4,6 +4,20 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from eom_treasury_rally.backtest import Window
+from eom_treasury_rally.data import load_dataset
+from eom_treasury_rally.holdout_ui import (
+    SPX_LINE,
+    SPX_NAME,
+    Line,
+    ann_stats,
+    comparison_table,
+    equity_chart,
+    locked_message,
+    log_evaluation,
+    setup_holdout,
+    show_equity_chart,
+    spx_growth,
+)
 from eom_treasury_rally.options_backtest import OptionSpec, iv_proxy_check, options_summary, run_options_backtest
 from eom_treasury_rally.options_cli import contract_grid
 from eom_treasury_rally.pricing import black_scholes, crr_price, drift_tree
@@ -84,18 +98,44 @@ with tab_pricer:
 
 
 @st.cache_data(show_spinner=False)
-def hist_backtest(dte: int, moneyness: float, half_spread: float, drift: float) -> pd.DataFrame:
-    return run_options_backtest(Window(3, 0), OptionSpec(dte=dte, moneyness=moneyness, half_spread=half_spread), excess_drift_bps=drift)
+def hist_backtest(dte: int, moneyness: float, half_spread: float, drift: float, cost_mult: float = 1.0) -> pd.DataFrame:
+    spec = OptionSpec(dte=dte, moneyness=moneyness, half_spread=half_spread * cost_mult, commission=OptionSpec().commission * cost_mult)
+    return run_options_backtest(Window(3, 0), spec, excess_drift_bps=drift, etf_cost_bps=2.0 * cost_mult)
 
 
 @st.cache_data(show_spinner=False)
-def hist_grid(half_spread: float) -> pd.DataFrame:
-    return contract_grid(Window(3, 0), half_spread)
+def hist_grid(half_spread: float, start: str, end: str) -> pd.DataFrame:
+    return contract_grid(Window(3, 0), half_spread, start=start, end=end)
 
 
 @st.cache_data(show_spinner=False)
-def proxy_check() -> dict:
-    return iv_proxy_check()
+def tlt_calendar() -> pd.DataFrame:
+    return load_dataset("TLT")[["rf"]]
+
+
+def growth_at_exits(trades: pd.DataFrame, col: str) -> pd.Series:
+    excess = trades[col] if col == "delta_hedged_pnl" else trades[col] - trades["rf_window"]
+    return pd.Series((1 + excess).cumprod().to_numpy(), index=pd.to_datetime(trades["exit"]))
+
+
+def comparison_rows(sample: str, t: pd.DataFrame, t_2x: pd.DataFrame) -> list[dict]:
+    def row(series: str, frame: pd.DataFrame, col: str, turnover: float) -> dict:
+        excess = frame[col] - frame["rf_window"]
+        return {"Sample": sample, "Series": series, **ann_stats(excess, excess, periods_per_year=12), "Turnover (×/yr)": turnover, "Trades": float(len(frame)), "Hit rate": (excess > 0).mean()}
+
+    return [
+        row("Call overlay, net", t, "call_overlay_ret", np.nan),
+        row("Call overlay, 2× costs", t_2x, "call_overlay_ret", np.nan),
+        row("Call overlay, before costs", t, "call_overlay_ret_gross", np.nan),
+        row("ETF in window, net of 2 bps/side", t, "etf_ret", 24.0),
+        row("ETF in window, 2× costs", t_2x, "etf_ret", 24.0),
+        row("ETF in window, before costs", t, "etf_ret_gross", 24.0),
+    ]
+
+
+@st.cache_data(show_spinner=False)
+def proxy_check(end: str) -> dict:
+    return iv_proxy_check(end=end)
 
 
 with tab_hist:
@@ -111,11 +151,38 @@ with tab_hist:
     hs = c3.select_slider("Half-spread ($/share)", [0.005, 0.01, 0.015, 0.02, 0.03], 0.01)
     try:
         with st.spinner("Pricing 287 months of options with the binomial tree…"):
-            trades = hist_backtest(dte, mny, hs, 11.0)
-            summ = options_summary(trades)
+            trades_all = hist_backtest(dte, mny, hs, 11.0)
+            calendar = tlt_calendar()
     except Exception as e:
         st.error(f"Couldn't run the options backtest ({type(e).__name__}: {e}).")
         st.stop()
+
+    first, last = pd.Timestamp(trades_all["entry"].iloc[0]), pd.Timestamp(trades_all["exit"].iloc[-1])
+    date_range = st.slider(
+        "Sample period", min_value=first.date(), max_value=last.date(), value=(first.date(), last.date()), format="YYYY-MM",
+        help="The holdout is cut from the end of whatever sample you pick.",
+    )
+    span = calendar.loc[str(date_range[0]) : str(date_range[1])]
+    if len(span) < 2 * 252:
+        st.warning("Pick a sample of at least two years.")
+        st.stop()
+    h = setup_holdout("Options overlay · TLT calls", span.index, (dte, mny, hs, str(date_range[0]), str(date_range[1])))
+    entry_dt, exit_dt = pd.to_datetime(trades_all["entry"]), pd.to_datetime(trades_all["exit"])
+    in_span = (entry_dt >= span.index[0]) & (exit_dt <= span.index[-1])
+    trades = trades_all[in_span & (exit_dt <= h.is_end)].reset_index(drop=True)
+    trades_span = trades_all[in_span].reset_index(drop=True)
+    trades_oos = trades_all[in_span & (entry_dt >= h.oos_start)].reset_index(drop=True)
+    if len(trades) < 12:
+        st.warning("Pick a sample with at least a year of in-sample trades.")
+        st.stop()
+    summ = options_summary(trades)
+    if h.revealed:
+        log_evaluation(
+            h,
+            options_summary(trades_oos).loc["Delta-matched call overlay (excess)", "Sharpe (ann.)"],
+            f"{dte}-day calls, strike {mny:.2f}× spot, ${hs:.3f} half-spread, enter -3, exit +0",
+        )
+    st.markdown(f"#### In-sample: {trades['entry'].iloc[0]:%Y-%m-%d} to {trades['exit'].iloc[-1]:%Y-%m-%d} ({len(trades)} trades)")
 
     etf = summ.loc["ETF in window (excess)"]
     call = summ.loc["Call, % of premium (excess)"]
@@ -127,26 +194,56 @@ with tab_hist:
     m[2].metric("Call sized like the ETF: Sharpe", f"{over['Sharpe (ann.)']:.2f}", f"{over['Sharpe (ann.)'] - etf['Sharpe (ann.)']:+.2f} vs ETF")
     m[3].metric("Delta-hedged call: avg P&L", f"{hedged['Avg per trade'] * 1e4:+.1f} bps", "≈ 0: no mispricing left", delta_color="off", delta_arrow="off")
 
-    dates = pd.to_datetime(trades["exit"])
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=dates, y=(1 + trades["etf_ret"] - trades["rf_window"]).cumprod(), name="ETF in window"))
-    fig.add_trace(go.Scatter(x=dates, y=(1 + trades["call_overlay_ret"] - trades["rf_window"]).cumprod(), name="Calls sized to the same exposure"))
-    fig.add_trace(go.Scatter(x=dates, y=(1 + trades["delta_hedged_pnl"]).cumprod(), name="Delta-hedged calls (the 'mispricing')"))
-    fig.update_layout(title="Growth of $1 in excess of T-bills, month-end trades only", height=400, legend=dict(orientation="h", y=-0.2))
-    st.plotly_chart(fig, width="stretch")
+    lines = [
+        Line("ETF in window (net)", growth_at_exits(trades_span, "etf_ret"), dict(width=2, color="#2563eb")),
+        Line("ETF in window (before costs)", growth_at_exits(trades_span, "etf_ret_gross"), dict(width=1.3, color="#2563eb", dash="dot")),
+        Line("Calls sized to the same exposure (net)", growth_at_exits(trades_span, "call_overlay_ret"), dict(width=2, color="#dc2626")),
+        Line("Calls sized to the same exposure (before costs)", growth_at_exits(trades_span, "call_overlay_ret_gross"), dict(width=1.3, color="#dc2626", dash="dot")),
+        Line("Delta-hedged calls (the 'mispricing')", growth_at_exits(trades_span, "delta_hedged_pnl"), dict(width=1.5, color="#7c3aed")),
+    ]
+    spx = spx_growth(span.index, span["rf"])
+    if spx is not None:
+        s = spx.loc[pd.to_datetime(trades_span["exit"])]
+        lines.append(Line(f"{SPX_NAME}, held all month", s / spx.loc[: pd.Timestamp(trades_span["entry"].iloc[0])].iloc[-1], SPX_LINE))
+    fig, target = equity_chart(lines, h, "Growth of $1 in excess of T-bills, month-end trades only", height=430)
+    show_equity_chart(fig, target, h)
+    st.caption(
+        "Dotted lines: the same trades at model mid prices with no spread, commission or ETF cost. "
+        "The delta-hedged line is already before costs. Dashed amber line: where the out-of-sample holdout starts. "
+        "Green line: the S&P 500 (SPY with dividends), held every day rather than only in the window, for reference."
+    )
+
+    if not h.revealed:
+        with st.expander("Out-of-sample holdout"):
+            locked_message(h)
+    else:
+        trades_2x = hist_backtest(dte, mny, hs, 11.0, cost_mult=2.0)
+        t2_entry, t2_exit = pd.to_datetime(trades_2x["entry"]), pd.to_datetime(trades_2x["exit"])
+        t2_span = (t2_entry >= span.index[0]) & (t2_exit <= span.index[-1])
+        st.markdown(f"#### Out-of-sample: {trades_oos['entry'].iloc[0]:%Y-%m-%d} to {trades_oos['exit'].iloc[-1]:%Y-%m-%d} ({len(trades_oos)} trades)")
+        rows = comparison_rows("In-sample", trades, trades_2x[t2_span & (t2_exit <= h.is_end)]) + comparison_rows("Out-of-sample", trades_oos, trades_2x[t2_span & (t2_entry >= h.oos_start)])
+        st.dataframe(comparison_table(rows), width="stretch", hide_index=True)
+        is_sharpe = over["Sharpe (ann.)"]
+        oos_sharpe = options_summary(trades_oos).loc["Delta-matched call overlay (excess)", "Sharpe (ann.)"]
+        se = 1 / np.sqrt(len(trades_oos) / 12)
+        st.markdown(
+            f"Call overlay net Sharpe **{is_sharpe:.2f}** in-sample against **{oos_sharpe:.2f}** out-of-sample. "
+            f"Over {len(trades_oos) / 12:.1f} years, noise alone moves a Sharpe by about ±{se:.1f} (one standard error). Report it either way. "
+            "2× costs doubles the option half-spread, the commission and the ETF cost. ETF turnover is 24× a year (12 round trips)."
+        )
 
     left, right = st.columns([3, 2])
     with left:
         fmt = {c: "{:.2%}" for c in ["Avg per trade", "Std per trade", "Hit rate", "Worst trade"]} | {"Sharpe (ann.)": "{:.2f}", "t-stat": "{:.2f}", "Trades": "{:.0f}"}
         st.dataframe(summ.style.format(fmt), width="stretch")
-        chk = proxy_check()
+        chk = proxy_check(str(h.is_end.date()))
         st.caption(
-            f"Model check: the drift tree predicted {trades['model_expected_ret_net'].mean():.1%} per call trade after costs; the backtest realized "
+            f"In-sample only. Model check: the drift tree predicted {trades['model_expected_ret_net'].mean():.1%} per call trade after costs; the backtest realized "
             f"{trades['call_ret'].mean():.1%}. Implied-vol proxy averaged {chk['avg_iv_proxy']:.1%} against {chk['avg_next_21d_realized']:.1%} realized."
         )
     with right:
         with st.spinner("Testing 12 expiry/strike combinations…"):
-            grid = hist_grid(hs)
+            grid = hist_grid(hs, str(span.index[0].date()), str(h.is_end.date()))
         pivot = grid.pivot(index="Days to expiry", columns="Strike / spot", values="Delta-matched Sharpe")
         fig = go.Figure()
         for col in pivot.columns:

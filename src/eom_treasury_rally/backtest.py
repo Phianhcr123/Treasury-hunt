@@ -80,14 +80,21 @@ def run_backtest(df: pd.DataFrame, window: Window, cost_bps: float = 2.0) -> Bac
     cost_bps is charged per side on each entry and exit (spread + commission + slippage).
     """
     pos = positions(df.index, window)
-    turnover = pos.diff().abs().fillna(pos.iloc[0])
+    # Entry cost lands on the first held day, exit cost on the last held day (the exit close),
+    # so every trade's costs fall inside its own month.
+    entries = (pos == 1) & (pos.shift(1, fill_value=0) == 0)
+    exits = (pos == 1) & (pos.shift(-1, fill_value=0) == 0)
+    turnover = entries.astype(int) + exits.astype(int)
     cost = turnover * cost_bps / 10_000
 
     out = pd.DataFrame(index=df.index)
     out["ret"] = df["ret"]
     out["rf"] = df["rf"]
     out["pos"] = pos
-    out["strategy"] = pos * df["ret"] + (1 - pos) * df["rf"] - cost
+    out["turnover"] = turnover
+    out["strategy_gross"] = pos * df["ret"] + (1 - pos) * df["rf"]
+    out["strategy_gross_excess"] = out["strategy_gross"] - out["rf"]
+    out["strategy"] = out["strategy_gross"] - cost
     out["strategy_excess"] = out["strategy"] - out["rf"]
     out["buy_hold"] = df["ret"]
     out["buy_hold_excess"] = df["ret"] - df["rf"]
@@ -140,6 +147,7 @@ def summary(res: BacktestResult) -> dict[str, dict[str, float]]:
 
     strat = block(d["strategy"], d["strategy_excess"])
     strat["Time in market"] = d["pos"].mean()
+    strat["Turnover (ann.)"] = d["turnover"].sum() / years
     t = res.trades
     if len(t):
         strat["Trades"] = float(len(t))
@@ -147,11 +155,47 @@ def summary(res: BacktestResult) -> dict[str, dict[str, float]]:
         strat["Hit rate"] = (t["net_excess"] > 0).mean()
         strat["t-stat (per trade)"] = t["net_excess"].mean() / (t["net_excess"].std(ddof=1) / np.sqrt(len(t)))
 
+    gross = block(d["strategy_gross"], d["strategy_gross_excess"])
+    if len(t):
+        gross["Avg trade (gross excess)"] = t["excess"].mean()
+
     return {
         "Month-end strategy": strat,
+        "Month-end strategy (before costs)": gross,
         "Buy & hold": block(d["buy_hold"], d["buy_hold_excess"]),
         "Rest of month only": block(d["rest_of_month_excess"] + d["rf"], d["rest_of_month_excess"]),
     }
+
+
+HOLDOUT_FRACTION = 0.2
+HOLDOUT_MAX_YEARS = 2.0
+
+
+def holdout_start(
+    index: pd.DatetimeIndex, fraction: float = HOLDOUT_FRACTION, max_years: float = HOLDOUT_MAX_YEARS
+) -> pd.Timestamp:
+    """First trading day of the out-of-sample holdout.
+
+    The holdout is the most recent `fraction` of the history or the most recent `max_years`,
+    whichever is shorter. The cut is moved back to the first trading day of its month so no
+    month-end window straddles the boundary; the holdout is never shorter than the rule.
+    """
+    first, last = index[0], index[-1]
+    length = min((last - first) * fraction, pd.Timedelta(days=365.25 * max_years))
+    month_start = (last - length).to_period("M").start_time
+    return index[index >= month_start][0]
+
+
+def slice_result(res: BacktestResult, start: pd.Timestamp | str | None = None, end: pd.Timestamp | str | None = None) -> BacktestResult:
+    """Restrict a backtest to [start, end] by date, keeping trades whose exit falls inside."""
+    daily = res.daily.loc[start:end]
+    t = res.trades
+    keep = pd.Series(True, index=t.index)
+    if start is not None:
+        keep &= t["exit_close"] >= pd.Timestamp(start)
+    if end is not None:
+        keep &= t["exit_close"] <= pd.Timestamp(end)
+    return BacktestResult(daily=daily, trades=t[keep].reset_index(drop=True), window=res.window, cost_bps=res.cost_bps)
 
 
 def day_of_month_profile(df: pd.DataFrame, before: int = 10, after: int = 5) -> pd.DataFrame:
@@ -248,7 +292,7 @@ def sensitivity_grid(
 DEFAULT_PERIODS = [
     ("Full sample", None, None),
     ("2002–2014", None, "2014-12-31"),
-    ("2015–present", "2015-01-01", None),
+    ("2015 onward", "2015-01-01", None),
     ("In paper's sample (≤2018)", None, "2018-12-31"),
     ("After paper's sample (2019+)", "2019-01-01", None),
     ("Last 3 years", "LAST3Y", None),
