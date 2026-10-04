@@ -5,10 +5,12 @@ import pytest
 from eom_treasury_rally.backtest import (
     Window,
     day_of_month_profile,
+    holdout_start,
     month_offsets,
     permutation_test,
     positions,
     run_backtest,
+    slice_result,
     summary,
 )
 
@@ -79,8 +81,66 @@ def test_strategy_earns_rf_out_of_market_and_pays_costs():
 
     res_cost = run_backtest(df, Window(3, 0), cost_bps=5)
     diff = (res.daily["strategy"] - res_cost.daily["strategy"]).sum()
-    # The final trade is still open on the last day of data, so it has no exit cost.
-    assert diff == pytest.approx((len(res.trades) * 2 - 1) * 5 / 10_000)
+    assert diff == pytest.approx(len(res.trades) * 2 * 5 / 10_000)
+
+
+def test_costs_land_on_entry_and_exit_days_and_match_trades():
+    df = make_df("2024-01-01", "2024-03-29", ret=0.001)
+    res = run_backtest(df, Window(3, 0), cost_bps=5)
+    d = res.daily
+    assert d.loc["2024-01-29":"2024-01-31", "turnover"].tolist() == [1, 0, 1]
+    assert d.loc["2024-02-01", "turnover"] == 0
+    for _, t in res.trades.iterrows():
+        held = d.loc[d.index > t["entry_close"]].loc[: t["exit_close"]]
+        net = (1 + held["strategy_excess"]).prod() - 1
+        # Daily compounding of the cost differs from the trade table's additive cost by a hair.
+        assert net == pytest.approx(t["net_excess"], abs=1e-5)
+
+
+def test_gross_series_is_strategy_before_costs():
+    df = make_df(ret=0.001, rf=0.0001)
+    d = run_backtest(df, Window(3, 0), cost_bps=5).daily
+    assert np.allclose(d["strategy_gross"] - d["strategy"], d["turnover"] * 5 / 10_000)
+    assert np.allclose(d["strategy_gross_excess"], d["strategy_gross"] - d["rf"])
+    s = summary(run_backtest(df, Window(3, 0), cost_bps=5))
+    assert s["Month-end strategy (before costs)"]["Excess return (ann.)"] > s["Month-end strategy"]["Excess return (ann.)"]
+    # 12 round trips a year, each side counted once.
+    assert s["Month-end strategy"]["Turnover (ann.)"] == pytest.approx(24, rel=0.05)
+
+
+def test_holdout_is_two_years_for_long_histories():
+    idx = pd.bdate_range("2002-07-31", "2026-10-02")
+    start = holdout_start(idx)
+    assert start == pd.Timestamp("2024-10-01")
+    assert (idx[-1] - start).days >= 2 * 365
+
+
+def test_holdout_is_twenty_percent_for_short_histories():
+    idx = pd.bdate_range("2020-01-01", "2024-12-31")
+    start = holdout_start(idx)
+    # 20% of 5 years is about a year (cut lands on 2023-12-31), moved back to the start of its month.
+    assert start == pd.Timestamp("2023-12-01")
+    assert pd.Timedelta(days=365) < idx[-1] - start <= pd.Timedelta(days=365 + 31)
+
+
+def test_holdout_boundary_never_splits_a_month():
+    idx = pd.bdate_range("2010-01-01", "2026-06-17")
+    start = holdout_start(idx)
+    before = idx[idx < start][-1]
+    assert before.to_period("M") != start.to_period("M")
+    assert idx[-1] - start >= pd.Timedelta(days=int(365.25 * 2))
+
+
+def test_slice_result_splits_daily_and_trades_cleanly():
+    df = make_df("2018-01-01", "2024-12-31", ret=0.001, rf=0.0001)
+    res = run_backtest(df, Window(3, 0), cost_bps=2)
+    cut = holdout_start(df.index)
+    ins = slice_result(res, end=df.index[df.index < cut][-1])
+    oos = slice_result(res, start=cut)
+    assert len(ins.daily) + len(oos.daily) == len(res.daily)
+    assert len(ins.trades) + len(oos.trades) == len(res.trades)
+    assert (oos.trades["entry_close"] >= ins.daily.index[-1]).all()
+    assert ins.daily["strategy"].sum() + oos.daily["strategy"].sum() == pytest.approx(res.daily["strategy"].sum())
 
 
 def test_detects_planted_month_end_effect():
