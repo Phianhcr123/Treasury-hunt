@@ -43,7 +43,7 @@ def load_trend_prices(tickers: Sequence[str], refresh: bool = False) -> pd.DataF
     return prices
 
 
-def _metrics(total_returns: pd.Series, excess_returns: pd.Series) -> Dict[str, float]:
+def portfolio_metrics(total_returns: pd.Series, excess_returns: pd.Series) -> Dict[str, float]:
     if total_returns.empty:
         return {}
 
@@ -120,7 +120,8 @@ def run_diversified_trend_backtest(
     turnover = weights.diff().abs().sum(axis=1)
     turnover.iloc[0] = float(weights.iloc[0].abs().sum())
     trading_cost = turnover * cost_bps / 10_000.0
-    strategy_excess = (weights * excess).sum(axis=1) - trading_cost
+    strategy_gross_excess = (weights * excess).sum(axis=1)
+    strategy_excess = strategy_gross_excess - trading_cost
     strategy_returns = rf + strategy_excess
     equal_weight_excess = excess.mean(axis=1)
     equal_weight_returns = rf + equal_weight_excess
@@ -129,6 +130,8 @@ def run_diversified_trend_backtest(
         {
             "strategy_ret": strategy_returns,
             "strategy_excess": strategy_excess,
+            "strategy_gross_ret": rf + strategy_gross_excess,
+            "strategy_gross_excess": strategy_gross_excess,
             "equal_weight_ret": equal_weight_returns,
             "equal_weight_excess": equal_weight_excess,
             "rf": rf,
@@ -146,8 +149,10 @@ def run_diversified_trend_backtest(
     weights = weights.loc[first_active:].copy()
 
     stats = {
-        "Diversified trend": _metrics(daily["strategy_ret"], daily["strategy_excess"]),
-        "Equal-weight buy & hold": _metrics(daily["equal_weight_ret"], daily["equal_weight_excess"]),
+        "Diversified trend": portfolio_metrics(daily["strategy_ret"], daily["strategy_excess"])
+        | {"Turnover (ann.)": float(daily["turnover"].mean() * TRADING_DAYS)},
+        "Diversified trend (before costs)": portfolio_metrics(daily["strategy_gross_ret"], daily["strategy_gross_excess"]),
+        "Equal-weight buy & hold": portfolio_metrics(daily["equal_weight_ret"], daily["equal_weight_excess"]),
     }
     return DiversifiedTrendResult(daily=daily, weights=weights, summary_stats=stats)
 
@@ -166,8 +171,8 @@ def trend_subperiods(result: DiversifiedTrendResult) -> pd.DataFrame:
         daily = result.daily.loc[start:end]
         if len(daily) < 60:
             continue
-        trend = _metrics(daily["strategy_ret"], daily["strategy_excess"])
-        benchmark = _metrics(daily["equal_weight_ret"], daily["equal_weight_excess"])
+        trend = portfolio_metrics(daily["strategy_ret"], daily["strategy_excess"])
+        benchmark = portfolio_metrics(daily["equal_weight_ret"], daily["equal_weight_excess"])
         rows.append(
             {
                 "Period": label,

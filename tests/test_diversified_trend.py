@@ -75,3 +75,11 @@ def test_summary_compares_same_dates_and_includes_post_2019():
     )
     assert "2019 onward" in subperiods["Period"].tolist()
     assert subperiods.loc[subperiods["Period"] == "2019 onward", "Days"].iloc[0] > 60
+
+def test_gross_returns_add_back_exactly_the_trading_cost():
+    result = run(make_prices(), cost_bps=5)
+    d = result.daily
+
+    assert np.allclose(d["strategy_gross_excess"] - d["cost"], d["strategy_excess"])
+    assert np.allclose(d["strategy_gross_ret"] - d["strategy_ret"], d["cost"])
+    assert result.summary_stats["Diversified trend"]["Turnover (ann.)"] == pytest.approx(d["turnover"].mean() * 252)
