@@ -1,31 +1,41 @@
 # Month-End Treasury Rally
 
-A backtest of the **month-end Treasury rally**. Bond index funds rebalance on the last trading day of each month and must buy longer Treasuries whatever the price, so Treasuries tend to rise in the last few trading days of the month.
+**Submitted strategy.** Buy TLT at the close three trading days before month-end, sell at the month-end close, and hold T-bills otherwise. The window was fixed before the backtest, following Hartley and Schwarz, rather than chosen from the results. The quant note is [`reports/quant_note/month_end_tlt_note.pdf`](reports/quant_note/month_end_tlt_note.pdf). The same text is in [`reports/quant_note/note.html`](reports/quant_note/note.html).
 
-The strategy holds a Treasury ETF (TLT by default) from the close **3 trading days before month-end** to the **month-end close**. The rest of the time it sits in T-bills. The 3-day window was fixed up front, following Hartley & Schwarz, rather than chosen after looking at the results.
+Dependencies are `pyproject.toml` and `uv.lock`. Data is downloaded from Yahoo Finance by the code and cached in `data/`, which is not committed.
 
-The project also includes an **options overlay**: an American CRR binomial tree that embeds the temporary month-end drift and values TLT calls over the window. It's used to test whether calls are a better vehicle for the trade than the ETF.
+## Headline results
 
-It also includes a **diversified trend research page**. This tests monthly time-series momentum across liquid ETF proxies for equities, Treasuries, gold, commodities and the US dollar, with volatility-scaled long/short positions, turnover costs, exposure caps, and post-2019 subperiod reporting. These are ETF proxies, not a futures backtest; the page calls out that limitation and compares results against an equal-weight buy-and-hold portfolio.
+Net of 2 bps per side. In-sample and the holdout are separate. Do not quote one Sharpe over the whole history: that blend includes the test set.
 
-## Results (TLT, Jul 2002 – Oct 2026, 2 bps cost per side)
+| | In-sample strategy | In-sample buy & hold TLT | Holdout strategy | Holdout buy & hold TLT |
+|---|---|---|---|---|
+| Period | 31 Jul 2002 – 30 Sep 2024 | same | 1 Oct 2024 – 2 Oct 2026 | same |
+| Excess return / year | 4.0% | 3.7% | −1.0% | −10.5% |
+| Volatility | 5.1% | 14.5% | 4.0% | 11.6% |
+| Sharpe | **0.78** | 0.26 | **−0.26** | −0.91 |
+| Max drawdown | −12.4% | −48.4% | −5.6% | −14.1% |
+| Turnover | 24× | 0 | 24× | 0 |
 
-| | Month-end strategy | Buy & hold TLT |
-|---|---|---|
-| Sharpe | **0.71** | 0.18 |
-| Excess return over T-bills / yr | 3.6% | 2.6% |
-| Max drawdown | −12% | −48% |
-| Time in market | 14% | 100% |
-| Avg trade (net) / hit rate | 0.30% / 61% (290 trades) | – |
+The holdout lost to T-bills. Its total return is still positive only because cash yields were high. A permutation test on the in-sample months, 2,000 random windows of the same length, has p-value 0.0005. Windows that exit on the month-end close have in-sample Sharpes from 0.58 to 0.79. Entry −3 is 0.78. IEF with the same rule, in-sample only, has a Sharpe of 0.83. One extra holdout look, entry −10, scored +0.07 and was discarded. Those looks are in `reports/oos_evaluations.csv`.
 
-- **Not luck:** a permutation test compares the month-end window with a random 3-day window in every month. The p-value is 0.0005.
-- **Robust to the window:** every window that exits at the month-end close has a Sharpe of about 0.5–0.75.
-- **Decaying:** the Sharpe was 0.87 up to 2018 (the paper's sample period), 0.41 from 2019 on, and about 0 over the last 3 years.
-- **Holds on other bonds:** IEF (7–10 year Treasuries) has a Sharpe of 0.81.
+```bash
+uv run eom-treasury-rally --ticker TLT --entry 3 --exit 0 --cost-bps 2 --evaluate-oos
+```
 
-Full report and charts: [`reports/tlt/report.md`](reports/tlt/report.md).
+## Other strategies left in the repo
+
+Three other books are in the code. They are not the submitted strategy, and their numbers are not in the quant note. They were not selected because their return per unit of risk does not outweigh the month-end TLT book. That book is about 5% volatility, with a −12% in-sample drawdown, in a liquid ETF.
+
+- **Options overlay** (`pages/2_Options_Overlay.py`). Calls on the same month-end window. They capture the drift and do not beat holding the ETF per unit of risk, after spreads.
+- **Adaptive trend** (`pages/3_Adaptive_Trend_Momentum.py`). A 200-day trend filter with a 15% volatility target. On QQQ it earns more dollars at about 14% volatility, so the Sharpe is lower, and the page has several free parameters.
+- **Diversified trend** (`pages/4_Diversified_Trend_Research.py`). Monthly time-series momentum across ETF proxies, with volatility-scaled long/short weights. It is a different hypothesis, on proxies rather than futures.
+
+Charts from the submitted backtest: [`reports/tlt/report.md`](reports/tlt/report.md).
 
 ## Options overlay
+
+Not the submitted strategy. The numbers below are the research check described above.
 
 **Why a drift tree isn't a mispricing detector.** Option prices are set under the risk-neutral measure, so the underlying's expected return doesn't enter them. A dealer who sells you a call hedges with delta shares, and the drift helps that hedge exactly as much as it helps your call. A tree with an upward drift therefore values *every* call above market and every put below it, by roughly delta × drift. The month-end volatility isn't mispriced either: TLT is slightly *calmer* in the window (13.2% against 14.4% annualized).
 
@@ -65,8 +75,8 @@ uv sync
 # Interactive dashboard on http://localhost:8631
 uv run streamlit run 1_Month_End_Treasury_Rally.py --server.port 8631
 
-# ETF report: prints stats, writes reports/<ticker>/report.md and PNG charts
-uv run eom-treasury-rally --ticker TLT --entry 3 --exit 0 --cost-bps 2
+# Headline result: in-sample and holdout, net of 2 bps. Matches the quant note.
+uv run eom-treasury-rally --ticker TLT --entry 3 --exit 0 --cost-bps 2 --evaluate-oos
 
 # Options report: historical call backtest, contract grid and live chain scan
 uv run eom-options --dte 30 --moneyness 1.0 --half-spread 0.01 --drift-bps 11
@@ -136,4 +146,4 @@ Data comes from Yahoo Finance and is cached in `data/`:
 - **Partial months:** partial windows at the start or end of the data are skipped.
 - **ETFs, not futures:** Treasury futures would be cheaper to trade. But Yahoo's continuous futures series isn't roll-adjusted, and the quarterly rolls fall near month-end, which would contaminate exactly the window being tested.
 - **Synthetic option prices:** these test the stated hypothesis that the market prices options at a flat volatility. They can't show whether real quotes already lean toward the drift. Use the live scanner, or saved snapshots across several month-ends, to check that.
-- **Small, noisy returns:** about 0.3% per trade, with long flat periods. Report the recent decay alongside the headline Sharpe.
+- **Small, noisy returns:** about 0.33% per trade in-sample, with long flat periods. The holdout Sharpe is −0.26. Report that next to the in-sample 0.78.
