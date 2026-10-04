@@ -60,8 +60,8 @@ You need Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 ```bash
 uv sync
 
-# Interactive dashboard on http://localhost:8631 (ETF backtest + "Options Overlay" page)
-uv run streamlit run app.py --server.port 8631
+# Interactive dashboard on http://localhost:8631
+uv run streamlit run 1_Month_End_Treasury_Rally.py --server.port 8631
 
 # ETF report: prints stats, writes reports/<ticker>/report.md and PNG charts
 uv run eom-treasury-rally --ticker TLT --entry 3 --exit 0 --cost-bps 2
