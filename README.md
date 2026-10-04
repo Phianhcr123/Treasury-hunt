@@ -83,6 +83,16 @@ uv run pytest
 - `--cost-bps`: trading cost per side, in basis points.
 - `--start` / `--end`: restrict the date range.
 - `--refresh`: re-download data instead of using the cache.
+- `--evaluate-oos`: also report the out-of-sample holdout. Run it once, at the end.
+
+### Out-of-sample holdout
+
+Following the track rule, the most recent 20% of history or the most recent 2 years, whichever is shorter, is held out. The cut is moved back to the start of its month, so no trade straddles it. For TLT the holdout is 2024-10-01 onward.
+
+- **Hidden by default.** The CLI report and every dashboard number (metrics, heatmap, permutation test, sub-periods, trades) use in-sample data only.
+- **Revealing it.** On the dashboard, tick "I've finished tuning on in-sample data" in the sidebar and press **Evaluate out-of-sample**. The "Out-of-sample" tab then shows in-sample and out-of-sample side by side: net of costs, net of 2× costs, before costs, and buy & hold, with Sharpe, drawdown, turnover and an equity curve.
+- **Audit log.** Every setting evaluated on the holdout is appended to `reports/oos_evaluations.csv`. Report every look in the quant note.
+- **Gross vs net.** Equity curves draw the strategy before costs as a dotted line next to the net line, so the cost drag is visible. Every reported number is net of costs unless labelled "before costs".
 
 `eom-options` options:
 
