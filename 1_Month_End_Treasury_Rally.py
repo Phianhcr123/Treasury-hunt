@@ -1,18 +1,12 @@
-from datetime import datetime, timezone
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from eom_treasury_rally.backtest import (
-    HOLDOUT_FRACTION,
-    HOLDOUT_MAX_YEARS,
     BacktestResult,
     Window,
     day_of_month_profile,
-    holdout_start,
     permutation_test,
     run_backtest,
     sensitivity_grid,
@@ -21,10 +15,22 @@ from eom_treasury_rally.backtest import (
     summary,
     yearly_returns,
 )
-from eom_treasury_rally.data import TREASURY_ETFS, DataError, load_close, load_dataset
+from eom_treasury_rally.data import TREASURY_ETFS, DataError, load_dataset
+from eom_treasury_rally.holdout_ui import (
+    SPX_LINE,
+    SPX_NAME,
+    Line,
+    comparison_table,
+    equity_chart,
+    growth,
+    locked_message,
+    log_evaluation,
+    setup_holdout,
+    show_equity_chart,
+    spx_growth,
+)
 
 PRE_REGISTERED = Window(entry=3, exit=0)
-OOS_LOG = Path(__file__).resolve().parent / "reports" / "oos_evaluations.csv"
 
 st.set_page_config(page_title="Month-End Treasury Rally", page_icon="📈", layout="wide")
 
@@ -42,23 +48,6 @@ def get_grid(df: pd.DataFrame, cost_bps: float) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def get_perm(df: pd.DataFrame, entry: int, exit_: int) -> dict:
     return permutation_test(df, Window(entry, exit_), n_sims=2000)
-
-
-@st.cache_data(show_spinner=False)
-def get_spy(refresh_token: int) -> pd.Series:
-    return load_close("SPY", refresh=refresh_token > 0)
-
-
-def growth(excess: pd.Series) -> pd.Series:
-    return (1 + excess).cumprod()
-
-
-def benchmark_excess(close: pd.Series | None, daily: pd.DataFrame) -> pd.Series | None:
-    """Daily total return of a benchmark over T-bills, on the backtest's calendar."""
-    if close is None:
-        return None
-    ret = close.reindex(daily.index).ffill().pct_change().fillna(0.0)
-    return ret - daily["rf"]
 
 
 def comparison_rows(sample: str, net: BacktestResult, net_2x: BacktestResult) -> list[dict]:
@@ -89,101 +78,8 @@ def comparison_rows(sample: str, net: BacktestResult, net_2x: BacktestResult) ->
     ]
 
 
-def log_oos_evaluation(row: dict) -> None:
-    OOS_LOG.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([row]).to_csv(OOS_LOG, mode="a", header=not OOS_LOG.exists(), index=False)
-
-
-SPX_NAME = "S&P 500 (SPY, total return)"
-SPX_LINE = dict(width=1.3, color="#16a34a")
-
-
-def equity_chart(
-    res_all: BacktestResult, spx: pd.Series | None, is_end: pd.Timestamp, oos_start: pd.Timestamp, revealed: bool, ticker: str, cost_bps: float
-) -> tuple[go.Figure, int | None]:
-    """Equity curve whose holdout is an amber window at the right; while locked, clicking the window reveals it.
-
-    Returns the figure and, when locked, the index of the invisible click-target trace covering the window.
-    """
-    full_d = res_all.daily
-    end = full_d.index[-1]
-    d = full_d if revealed else full_d.loc[:is_end]
-    series = {
-        f"Month-end strategy (net of {cost_bps:g} bps/side)": (growth(d["strategy_excess"]), dict(width=2.5, color="#2563eb")),
-        "Month-end strategy (before costs)": (growth(d["strategy_gross_excess"]), dict(width=1.5, color="#2563eb", dash="dot")),
-        f"Buy & hold {ticker}": (growth(d["buy_hold_excess"]), dict(width=1.5, color="#9ca3af")),
-        "Rest of month only": (growth(d["rest_of_month_excess"]), dict(width=1.5, color="#f97316", dash="dash")),
-    }
-    if spx is not None:
-        series[SPX_NAME] = (growth(spx.loc[d.index]), SPX_LINE)
-    fig = go.Figure()
-    for name, (y, line) in series.items():
-        fig.add_trace(go.Scatter(x=d.index, y=y, name=name, line=line))
-
-    oos_years = (end - oos_start).days / 365.25
-    mid = oos_start + (end - oos_start) / 2
-    fig.add_vrect(x0=oos_start, x1=end, fillcolor="rgba(255, 184, 77, 0.10)" if revealed else "rgba(255, 184, 77, 0.22)", line_width=0, layer="below")
-    fig.add_vline(x=oos_start, line=dict(color="#f59e0b", width=1.5, dash="dash"))
-    amber = dict(color="#b45309", family="monospace")
-    fig.add_annotation(x=oos_start, y=1, xref="x", yref="paper", text="IN-SAMPLE ", showarrow=False, xanchor="right", yanchor="top", font=dict(size=10, color="#64748b", family="monospace"))
-
-    target = None
-    if revealed:
-        fig.add_annotation(x=oos_start, y=1, xref="x", yref="paper", text=" OUT-OF-SAMPLE · EVALUATED", showarrow=False, xanchor="left", yanchor="top", font=dict(size=10, **amber))
-    else:
-        # Scale the y-axis on in-sample data only, so the axis range leaks nothing about the holdout.
-        values = np.concatenate([y.to_numpy() for y, _ in series.values()])
-        lo, hi = np.log10(values.min()), np.log10(values.max())
-        pad = 0.06 * (hi - lo)
-        fig.update_yaxes(range=[lo - pad, hi + pad])
-        fig.update_xaxes(range=[full_d.index[0], end])
-        # Short stacked lines, because the holdout can be under a tenth of the chart's width.
-        fig.add_annotation(x=mid, y=0.66, xref="x", yref="paper", text="<b>OUT-OF-<br>SAMPLE</b><br>LOCKED", showarrow=False, font=dict(size=10, **amber))
-        fig.add_annotation(
-            x=mid, y=0.52, xref="x", yref="paper", text=f"LAST {oos_years:.1f} YRS<br>{len(full_d.loc[oos_start:])} BARS",
-            showarrow=False, font=dict(size=9, color="#92400e", family="monospace"),
-        )
-        fig.add_annotation(
-            x=mid, y=0.38, xref="x", yref="paper", text="<b>EVALUATE<br>ONCE ▸</b>", showarrow=False,
-            font=dict(size=10, color="#78350f", family="monospace"), bgcolor="rgba(255, 184, 77, 0.55)", bordercolor="#f59e0b", borderwidth=1.5, borderpad=5,
-        )
-        # Plotly can't make shapes clickable, so a grid of transparent points covers the window and catches the click.
-        gx, gy = np.meshgrid(pd.date_range(oos_start, end, periods=40), np.logspace(lo - pad, hi + pad, 24))
-        fig.add_trace(
-            go.Scatter(
-                x=gx.ravel(), y=gy.ravel(), mode="markers", name="holdout", showlegend=False,
-                marker=dict(size=22, color="rgba(0, 0, 0, 0)"),
-                hovertemplate="Click to evaluate the out-of-sample period once<extra></extra>",
-            )
-        )
-        target = len(fig.data) - 1
-
-    title = "Growth of $1 in excess of T-bills (log scale)"
-    fig.update_layout(title=title, yaxis_type="log", height=460, legend=dict(orientation="h", y=-0.15), margin=dict(t=50, b=10), hovermode="closest")
-    return fig, target
-
-
-def reveal(t: str) -> None:
-    st.session_state.oos_revealed.add(t)
-    st.session_state.chart_nonce += 1
-
-
-def relock(t: str) -> None:
-    st.session_state.oos_revealed.discard(t)
-    st.session_state.oos_first_config.pop(t, None)
-    st.session_state.chart_nonce += 1
-
-
 if "refresh" not in st.session_state:
     st.session_state.refresh = 0
-if "oos_revealed" not in st.session_state:
-    st.session_state.oos_revealed = set()
-if "oos_logged" not in st.session_state:
-    st.session_state.oos_logged = set()
-if "oos_first_config" not in st.session_state:
-    st.session_state.oos_first_config = {}
-if "chart_nonce" not in st.session_state:
-    st.session_state.chart_nonce = 0
 
 with st.sidebar:
     st.header("Strategy settings")
@@ -229,51 +125,16 @@ span = full.loc[d0:d1]
 if len(span) < 2 * 252:
     st.warning("Pick a sample of at least two years.")
     st.stop()
-oos_start = holdout_start(span.index)
-is_end = span.index[span.index < oos_start][-1]
-data_end = span.index[-1]
+window = Window(entry, exit_)
+config = (entry, exit_, cost_bps, str(d0.date()), str(d1.date()))
+h = setup_holdout(f"Month-end rally · {ticker}", span.index, config)
+oos_start, is_end, revealed = h.oos_start, h.is_end, h.revealed
 df = span.loc[:is_end]
 if len(df) < 252:
     st.warning("Pick a sample with at least one year of in-sample data.")
     st.stop()
 
-window = Window(entry, exit_)
-config = (entry, exit_, cost_bps, str(d0.date()), str(d1.date()))
-revealed = ticker in st.session_state.oos_revealed
-log_key = (ticker, *config)
-peeks = sum(1 for k in st.session_state.oos_logged if k[0] == ticker) + int(revealed and log_key not in st.session_state.oos_logged)
-
-sample_years = (data_end - span.index[0]).days / 365.25
-cap_binds = sample_years * HOLDOUT_FRACTION > HOLDOUT_MAX_YEARS
-with st.sidebar:
-    st.header("Out-of-sample holdout")
-    st.markdown(f"**{'2-year cap binds' if cap_binds else '20% binds'}**")
-    if cap_binds:
-        st.caption(f"20% of {sample_years:.1f} years would be {sample_years * HOLDOUT_FRACTION:.1f} years. The 2-year cap is shorter, so hold out 2 years.")
-    else:
-        st.caption(f"20% of {sample_years:.1f} years is {sample_years * HOLDOUT_FRACTION:.1f} years, shorter than 2 years, so hold out 20%.")
-    st.markdown(
-        f"In-sample: **{span.index[0]:%Y-%m-%d} to {is_end:%Y-%m-%d}**  \n"
-        f"Holdout: **{oos_start:%Y-%m-%d} to {data_end:%Y-%m-%d}** ({(data_end - oos_start).days / 365.25:.1f} years)"
-    )
-    st.caption("The cut is moved back to a month start so no trade straddles it.")
-    if not revealed:
-        st.markdown("Status: **locked**. Click the amber window at the end of the equity chart to evaluate it once.")
-    else:
-        st.markdown(f"Status: **evaluated** · peeks this session: **{peeks}**")
-        st.caption(f"Each evaluation is appended to `reports/{OOS_LOG.name}`. Report every look in the quant note.")
-        st.button("Relock", width="stretch", on_click=relock, args=(ticker,))
-
-if revealed:
-    first = st.session_state.oos_first_config.setdefault(ticker, config)
-    if config != first:
-        st.error(
-            "**TEST SET LEAKED.** You changed the settings after seeing the out-of-sample period. That is tuning on the test set, "
-            "and those results now overstate what the strategy would do on data it hasn't seen. Judges cap the Performance score at 4 for this. "
-            f"Peeks this session: **{peeks}**. In real life you can't un-see a result, so report every peek in your note."
-        )
-        st.button("Relock and start over", on_click=relock, args=(ticker,))
-elif window != PRE_REGISTERED:
+if not revealed and window != PRE_REGISTERED:
     st.info(
         f"You're exploring a different window from the pre-registered one (enter 3 days before, exit at month-end). "
         "Picking the best-looking window after seeing results inflates the Sharpe; check the heatmap below to see how robust it is."
@@ -284,11 +145,7 @@ with st.spinner("Running backtest…"):
     res_all = run_backtest(span, window, cost_bps)
     res_all_2x = run_backtest(span, window, 2 * cost_bps)
     res = slice_result(res_all, end=is_end)
-    try:
-        spy_close = get_spy(st.session_state.refresh)
-    except Exception:  # the benchmark is reference only, so the page works without it
-        spy_close = None
-    spx = benchmark_excess(spy_close, res_all.daily)
+    spx = spx_growth(span.index, span["rf"])
     s = summary(res)
     perm = get_perm(df, entry, exit_)
     grid = get_grid(df, cost_bps)
@@ -300,23 +157,7 @@ oos_res = oos_res_2x = None
 if revealed:
     oos_res = slice_result(res_all, start=oos_start)
     oos_res_2x = slice_result(res_all_2x, start=oos_start)
-    oos_sharpe = summary(oos_res)["Month-end strategy"]["Sharpe"]
-    if log_key not in st.session_state.oos_logged:
-        log_oos_evaluation(
-            {
-                "evaluated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-                "ticker": ticker,
-                "entry": entry,
-                "exit": exit_,
-                "cost_bps": cost_bps,
-                "pre_registered": window == PRE_REGISTERED,
-                "sample_start": str(span.index[0].date()),
-                "oos_start": str(oos_start.date()),
-                "oos_end": str(data_end.date()),
-                "oos_sharpe_net": round(oos_sharpe, 4),
-            }
-        )
-        st.session_state.oos_logged.add(log_key)
+    log_evaluation(h, summary(oos_res)["Month-end strategy"]["Sharpe"], f"{ticker}, entry -{entry}, exit {exit_:+d}, {cost_bps:g} bps/side")
 
 st.subheader(f"In-sample: {df.index[0]:%Y-%m-%d} to {df.index[-1]:%Y-%m-%d}")
 strat, bh = s["Month-end strategy"], s["Buy & hold"]
@@ -331,15 +172,17 @@ c[5].metric("Permutation p-value", f"{perm['p_value']:.4f}", "vs random windows"
 tab_overview, tab_oos, tab_robust, tab_trades, tab_about = st.tabs(["Performance", "Out-of-sample", "Robustness", "Trades", "How it works"])
 
 with tab_overview:
-    fig, target = equity_chart(res_all, spx, is_end, oos_start, revealed, ticker, cost_bps)
-    chart_key = f"equity_{ticker}_{st.session_state.chart_nonce}"
-    if target is None:
-        st.plotly_chart(fig, width="stretch", key=chart_key)
-    else:
-        event = st.plotly_chart(fig, width="stretch", key=chart_key, on_select="rerun", selection_mode="points")
-        if any(p.get("curve_number") == target for p in event.selection.points):
-            reveal(ticker)
-            st.rerun()
+    d = res_all.daily
+    lines = [
+        Line(f"Month-end strategy (net of {cost_bps:g} bps/side)", growth(d["strategy_excess"]), dict(width=2.5, color="#2563eb")),
+        Line("Month-end strategy (before costs)", growth(d["strategy_gross_excess"]), dict(width=1.5, color="#2563eb", dash="dot")),
+        Line(f"Buy & hold {ticker}", growth(d["buy_hold_excess"]), dict(width=1.5, color="#9ca3af")),
+        Line("Rest of month only", growth(d["rest_of_month_excess"]), dict(width=1.5, color="#f97316", dash="dash")),
+    ]
+    if spx is not None:
+        lines.append(Line(SPX_NAME, spx, SPX_LINE))
+    fig, target = equity_chart(lines, h, "Growth of $1 in excess of T-bills (log scale)")
+    show_equity_chart(fig, target, h)
     st.caption(
         "Dotted blue line: the same trades before transaction costs; the gap to the solid line is the cost drag. "
         "Dashed amber line: where the out-of-sample holdout starts. Green line: the S&P 500 (SPY with dividends) for reference. "
@@ -375,13 +218,7 @@ with tab_overview:
 
 with tab_oos:
     if not revealed:
-        st.markdown(
-            f"#### Locked: {oos_start:%Y-%m-%d} to {data_end:%Y-%m-%d}\n"
-            f"The track holds out the most recent {HOLDOUT_FRACTION:.0%} of history or {HOLDOUT_MAX_YEARS:g} years, whichever is shorter. "
-            f"For the selected {ticker} sample that is the last {(data_end - oos_start).days / 365.25:.1f} years. "
-            "Develop and tune on the in-sample period, then evaluate the holdout **once**, at the end, by clicking the amber window "
-            "on the Performance tab's equity chart. If you change the strategy after looking, it isn't out-of-sample anymore."
-        )
+        locked_message(h)
     else:
         od = oos_res.daily
         n_oos_trades = len(oos_res.trades)
@@ -421,7 +258,7 @@ with tab_oos:
             fig.add_trace(go.Scatter(x=od.index, y=growth(oos_res_2x.daily["strategy_excess"]), name=f"Strategy (net of {2 * cost_bps:g} bps/side)", line=dict(width=1.5, color="#7c3aed")))
             fig.add_trace(go.Scatter(x=od.index, y=growth(od["buy_hold_excess"]), name=f"Buy & hold {ticker}", line=dict(width=1.5, color="#9ca3af")))
             if spx is not None:
-                fig.add_trace(go.Scatter(x=od.index, y=growth(spx.loc[od.index]), name=SPX_NAME, line=SPX_LINE))
+                fig.add_trace(go.Scatter(x=od.index, y=spx.loc[od.index] / spx.loc[od.index].iloc[0], name=SPX_NAME, line=SPX_LINE))
             fig.update_layout(title="Out-of-sample growth of $1 in excess of T-bills", height=400, legend=dict(orientation="h", y=-0.2), margin=dict(t=50))
             st.plotly_chart(fig, width="stretch")
         with right:
