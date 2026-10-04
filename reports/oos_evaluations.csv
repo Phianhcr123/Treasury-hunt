@@ -1,0 +1,2 @@
+evaluated_at_utc,strategy,settings,sample_start,oos_start,oos_end,oos_sharpe_net
+2026-10-04 07:46:55,Month-end rally · TLT,"TLT, entry -3, exit +0, 2 bps/side",2002-07-31,2024-10-01,2026-10-02,-0.2555
