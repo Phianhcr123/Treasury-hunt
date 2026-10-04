@@ -241,6 +241,8 @@ COMPARISON_FMT = {
     "Sharpe": "{:.2f}",
     "Max drawdown": "{:.1%}",
     "Turnover (×/yr)": "{:.1f}",
+    "Trades": "{:.0f}",
+    "Hit rate": "{:.0%}",
 }
 
 
