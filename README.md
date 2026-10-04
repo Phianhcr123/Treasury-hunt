@@ -6,6 +6,8 @@ The strategy holds a Treasury ETF (TLT by default) from the close **3 trading da
 
 The project also includes an **options overlay**: an American CRR binomial tree that embeds the temporary month-end drift and values TLT calls over the window. It's used to test whether calls are a better vehicle for the trade than the ETF.
 
+It also includes a **diversified trend research page**. This tests monthly time-series momentum across liquid ETF proxies for equities, Treasuries, gold, commodities and the US dollar, with volatility-scaled long/short positions, turnover costs, exposure caps, and post-2019 subperiod reporting. These are ETF proxies, not a futures backtest; the page calls out that limitation and compares results against an equal-weight buy-and-hold portfolio.
+
 ## Results (TLT, Jul 2002 – Oct 2026, 2 bps cost per side)
 
 | | Month-end strategy | Buy & hold TLT |
@@ -111,8 +113,9 @@ Data comes from Yahoo Finance and is cached in `data/`:
   - the drift tree.
 - `src/eom_treasury_rally/options_backtest.py`: the synthetic historical call overlay.
 - `src/eom_treasury_rally/scanner.py`: the live chain scan and the NYSE month-end calendar.
+- `src/eom_treasury_rally/diversified_trend.py`: monthly, volatility-scaled trend research using adjusted ETF proxies.
 - `src/eom_treasury_rally/cli.py`, `options_cli.py`: the reports and static charts.
-- `app.py`, `pages/2_Options_Overlay.py`: the Streamlit dashboard.
+- `1_Month_End_Treasury_Rally.py`, `pages/`: the Streamlit dashboard and research pages.
 - `tests/`: unit tests for calendar logic, costs, the planted-effect and pure-noise checks, pricing convergence, early exercise, implied-volatility round trips, and the drift tree.
 
 ## Assumptions and caveats
