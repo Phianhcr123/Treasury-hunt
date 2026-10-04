@@ -21,7 +21,7 @@ from eom_treasury_rally.backtest import (
     summary,
     yearly_returns,
 )
-from eom_treasury_rally.data import TREASURY_ETFS, DataError, load_dataset
+from eom_treasury_rally.data import TREASURY_ETFS, DataError, load_close, load_dataset
 
 PRE_REGISTERED = Window(entry=3, exit=0)
 OOS_LOG = Path(__file__).resolve().parent / "reports" / "oos_evaluations.csv"
@@ -44,8 +44,21 @@ def get_perm(df: pd.DataFrame, entry: int, exit_: int) -> dict:
     return permutation_test(df, Window(entry, exit_), n_sims=2000)
 
 
+@st.cache_data(show_spinner=False)
+def get_spy(refresh_token: int) -> pd.Series:
+    return load_close("SPY", refresh=refresh_token > 0)
+
+
 def growth(excess: pd.Series) -> pd.Series:
     return (1 + excess).cumprod()
+
+
+def benchmark_excess(close: pd.Series | None, daily: pd.DataFrame) -> pd.Series | None:
+    """Daily total return of a benchmark over T-bills, on the backtest's calendar."""
+    if close is None:
+        return None
+    ret = close.reindex(daily.index).ffill().pct_change().fillna(0.0)
+    return ret - daily["rf"]
 
 
 def comparison_rows(sample: str, net: BacktestResult, net_2x: BacktestResult) -> list[dict]:
@@ -81,7 +94,13 @@ def log_oos_evaluation(row: dict) -> None:
     pd.DataFrame([row]).to_csv(OOS_LOG, mode="a", header=not OOS_LOG.exists(), index=False)
 
 
-def equity_chart(res_all: BacktestResult, is_end: pd.Timestamp, oos_start: pd.Timestamp, revealed: bool, ticker: str, cost_bps: float) -> tuple[go.Figure, int | None]:
+SPX_NAME = "S&P 500 (SPY, total return)"
+SPX_LINE = dict(width=1.3, color="#16a34a")
+
+
+def equity_chart(
+    res_all: BacktestResult, spx: pd.Series | None, is_end: pd.Timestamp, oos_start: pd.Timestamp, revealed: bool, ticker: str, cost_bps: float
+) -> tuple[go.Figure, int | None]:
     """Equity curve whose holdout is an amber window at the right; while locked, clicking the window reveals it.
 
     Returns the figure and, when locked, the index of the invisible click-target trace covering the window.
@@ -95,6 +114,8 @@ def equity_chart(res_all: BacktestResult, is_end: pd.Timestamp, oos_start: pd.Ti
         f"Buy & hold {ticker}": (growth(d["buy_hold_excess"]), dict(width=1.5, color="#9ca3af")),
         "Rest of month only": (growth(d["rest_of_month_excess"]), dict(width=1.5, color="#f97316", dash="dash")),
     }
+    if spx is not None:
+        series[SPX_NAME] = (growth(spx.loc[d.index]), SPX_LINE)
     fig = go.Figure()
     for name, (y, line) in series.items():
         fig.add_trace(go.Scatter(x=d.index, y=y, name=name, line=line))
@@ -116,11 +137,15 @@ def equity_chart(res_all: BacktestResult, is_end: pd.Timestamp, oos_start: pd.Ti
         pad = 0.06 * (hi - lo)
         fig.update_yaxes(range=[lo - pad, hi + pad])
         fig.update_xaxes(range=[full_d.index[0], end])
-        fig.add_annotation(x=mid, y=0.62, xref="x", yref="paper", text="<b>OUT-OF-SAMPLE · LOCKED</b>", showarrow=False, font=dict(size=12, **amber))
-        fig.add_annotation(x=mid, y=0.53, xref="x", yref="paper", text=f"LAST {oos_years:.1f} YEARS · {len(full_d.loc[oos_start:])} BARS", showarrow=False, font=dict(size=10, color="#92400e", family="monospace"))
+        # Short stacked lines, because the holdout can be under a tenth of the chart's width.
+        fig.add_annotation(x=mid, y=0.66, xref="x", yref="paper", text="<b>OUT-OF-<br>SAMPLE</b><br>LOCKED", showarrow=False, font=dict(size=10, **amber))
         fig.add_annotation(
-            x=mid, y=0.41, xref="x", yref="paper", text="<b>EVALUATE ONCE ▸</b>", showarrow=False,
-            font=dict(size=11, color="#78350f", family="monospace"), bgcolor="rgba(255, 184, 77, 0.55)", bordercolor="#f59e0b", borderwidth=1.5, borderpad=6,
+            x=mid, y=0.52, xref="x", yref="paper", text=f"LAST {oos_years:.1f} YRS<br>{len(full_d.loc[oos_start:])} BARS",
+            showarrow=False, font=dict(size=9, color="#92400e", family="monospace"),
+        )
+        fig.add_annotation(
+            x=mid, y=0.38, xref="x", yref="paper", text="<b>EVALUATE<br>ONCE ▸</b>", showarrow=False,
+            font=dict(size=10, color="#78350f", family="monospace"), bgcolor="rgba(255, 184, 77, 0.55)", bordercolor="#f59e0b", borderwidth=1.5, borderpad=5,
         )
         # Plotly can't make shapes clickable, so a grid of transparent points covers the window and catches the click.
         gx, gy = np.meshgrid(pd.date_range(oos_start, end, periods=40), np.logspace(lo - pad, hi + pad, 24))
@@ -259,6 +284,11 @@ with st.spinner("Running backtest…"):
     res_all = run_backtest(span, window, cost_bps)
     res_all_2x = run_backtest(span, window, 2 * cost_bps)
     res = slice_result(res_all, end=is_end)
+    try:
+        spy_close = get_spy(st.session_state.refresh)
+    except Exception:  # the benchmark is reference only, so the page works without it
+        spy_close = None
+    spx = benchmark_excess(spy_close, res_all.daily)
     s = summary(res)
     perm = get_perm(df, entry, exit_)
     grid = get_grid(df, cost_bps)
@@ -301,7 +331,7 @@ c[5].metric("Permutation p-value", f"{perm['p_value']:.4f}", "vs random windows"
 tab_overview, tab_oos, tab_robust, tab_trades, tab_about = st.tabs(["Performance", "Out-of-sample", "Robustness", "Trades", "How it works"])
 
 with tab_overview:
-    fig, target = equity_chart(res_all, is_end, oos_start, revealed, ticker, cost_bps)
+    fig, target = equity_chart(res_all, spx, is_end, oos_start, revealed, ticker, cost_bps)
     chart_key = f"equity_{ticker}_{st.session_state.chart_nonce}"
     if target is None:
         st.plotly_chart(fig, width="stretch", key=chart_key)
@@ -312,7 +342,8 @@ with tab_overview:
             st.rerun()
     st.caption(
         "Dotted blue line: the same trades before transaction costs; the gap to the solid line is the cost drag. "
-        "Dashed amber line: where the out-of-sample holdout starts."
+        "Dashed amber line: where the out-of-sample holdout starts. Green line: the S&P 500 (SPY with dividends) for reference. "
+        "Click a legend entry to hide a line."
     )
 
     left, right = st.columns(2)
@@ -389,6 +420,8 @@ with tab_oos:
             fig.add_trace(go.Scatter(x=od.index, y=growth(od["strategy_gross_excess"]), name="Strategy (before costs)", line=dict(width=1.5, color="#2563eb", dash="dot")))
             fig.add_trace(go.Scatter(x=od.index, y=growth(oos_res_2x.daily["strategy_excess"]), name=f"Strategy (net of {2 * cost_bps:g} bps/side)", line=dict(width=1.5, color="#7c3aed")))
             fig.add_trace(go.Scatter(x=od.index, y=growth(od["buy_hold_excess"]), name=f"Buy & hold {ticker}", line=dict(width=1.5, color="#9ca3af")))
+            if spx is not None:
+                fig.add_trace(go.Scatter(x=od.index, y=growth(spx.loc[od.index]), name=SPX_NAME, line=SPX_LINE))
             fig.update_layout(title="Out-of-sample growth of $1 in excess of T-bills", height=400, legend=dict(orientation="h", y=-0.2), margin=dict(t=50))
             st.plotly_chart(fig, width="stretch")
         with right:
