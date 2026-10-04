@@ -133,10 +133,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     a = p.parse_args(argv)
 
-    full = load_dataset(a.ticker, refresh=a.refresh)
-    oos_start = holdout_start(full.index)
-    is_end = full.index[full.index < oos_start][-1]
-    span = full.loc[a.start : a.end]
+    span = load_dataset(a.ticker, refresh=a.refresh).loc[a.start : a.end]
+    oos_start = holdout_start(span.index)
+    is_end = span.index[span.index < oos_start][-1]
     df = span.loc[:is_end]
     window = Window(a.entry, a.exit)
     res_all = run_backtest(span, window, a.cost_bps)
@@ -148,8 +147,8 @@ def main(argv: list[str] | None = None) -> None:
     grid = sensitivity_grid(df, cost_bps=a.cost_bps)
     yearly = yearly_returns(res)
 
-    oos_md = f"Out-of-sample holdout {oos_start.date()} to {full.index[-1].date()} is locked. Re-run with `--evaluate-oos` once, at the end."
-    show_oos = a.evaluate_oos and span.index[-1] >= oos_start
+    oos_md = f"Out-of-sample holdout {oos_start.date()} to {span.index[-1].date()} is locked. Re-run with `--evaluate-oos` once, at the end."
+    show_oos = a.evaluate_oos
     if show_oos:
         res_all_2x = run_backtest(span, window, 2 * a.cost_bps)
         rows = {}
